@@ -24,9 +24,9 @@
       <a href="#/cashier" data-route="cashier">出纳 / 银行</a>
       <a href="#/assets" data-route="assets">固定资产</a>
       <a href="#/payroll" data-route="payroll">薪酬工资</a>
-      <div class="nav-group">待建模块</div>
       <a href="#/tax" data-route="tax">税务管理</a>
-      <a href="#/reports" data-route="reports">财务报表 <span class="chunk-tag">chunk 7</span></a>
+      <a href="#/reports" data-route="reports">财务报表</a>
+      <div class="nav-group">待建模块</div>
       <a href="#/invoices" data-route="invoices">发票 <span class="chunk-tag">chunk 8</span></a>
       <a href="#/budget" data-route="budget">预算 <span class="chunk-tag">chunk 8</span></a>
       <a href="#/audit" data-route="audit">审计日志 <span class="chunk-tag">chunk 8</span></a>
@@ -59,19 +59,20 @@ window.FMToast = function (msg, type) {
   }, 2600);
 };
 </script>
-<script src="js/taxrules.js?v=20261127e"></script>
-<script src="js/store.js?v=20261127e"></script>
-<script src="js/accounts.js?v=20261127e"></script>
-<script src="js/voucher.js?v=20261127e"></script>
-<script src="js/dashboard.js?v=20261127e"></script>
-<script src="js/ledger.js?v=20261127e"></script>
-<script src="js/closing.js?v=20261127e"></script>
-<script src="js/opening.js?v=20261127e"></script>
-<script src="js/arap.js?v=20261127e"></script>
-<script src="js/cashier.js?v=20261127e"></script>
-<script src="js/assets.js?v=20261127e"></script>
-<script src="js/payroll.js?v=20261127e"></script>
-<script src="js/tax.js?v=20261127e"></script>
+<script src="js/taxrules.js?v=20261127f"></script>
+<script src="js/store.js?v=20261127f"></script>
+<script src="js/accounts.js?v=20261127f"></script>
+<script src="js/voucher.js?v=20261127f"></script>
+<script src="js/dashboard.js?v=20261127f"></script>
+<script src="js/ledger.js?v=20261127f"></script>
+<script src="js/closing.js?v=20261127f"></script>
+<script src="js/opening.js?v=20261127f"></script>
+<script src="js/arap.js?v=20261127f"></script>
+<script src="js/cashier.js?v=20261127f"></script>
+<script src="js/assets.js?v=20261127f"></script>
+<script src="js/payroll.js?v=20261127f"></script>
+<script src="js/tax.js?v=20261127f"></script>
+<script src="js/reports.js?v=20261127f"></script>
 <script>
 (function () {
   'use strict';
@@ -106,7 +107,6 @@ window.FMToast = function (msg, type) {
 
   /* 待建模块占位 */
   var PLACEHOLDER = {
-    reports: ['财务报表（资产负债表 / 利润表 / 现金流量表）', 7],
     invoices: ['发票管理', 8],
     budget: ['预算管理', 8],
     audit: ['审计日志', 8],
@@ -153,6 +153,7 @@ window.FMToast = function (msg, type) {
     if (head === 'assets') { FMAssets.renderAssets(view); return; }
     if (head === 'payroll') { FMPayroll.renderPayroll(view); return; }
     if (head === 'tax') { FMTax.renderTax(view); return; }
+    if (head === 'reports') { FMReports.renderReports(view); return; }
     if (head === 'settings') { renderSettings(view); return; }
     renderPlaceholder(head);
   }

@@ -17,7 +17,8 @@ global.FMToast = function () {};
 var fs = require('fs');
 var path = require('path');
 ['js/taxrules.js', 'js/store.js', 'js/accounts.js', 'js/voucher.js', 'js/dashboard.js',
- 'js/ledger.js', 'js/closing.js', 'js/opening.js', 'js/arap.js', 'js/cashier.js', 'js/assets.js', 'js/payroll.js', 'js/tax.js'].forEach(function (f) {
+ 'js/ledger.js', 'js/closing.js', 'js/opening.js', 'js/arap.js', 'js/cashier.js', 'js/assets.js', 'js/payroll.js', 'js/tax.js',
+ 'js/reports.js'].forEach(function (f) {
   /* 在全局作用域执行，等价于浏览器的 <script src> */
   var code = fs.readFileSync(path.join(__dirname, f), 'utf8');
   require('vm').runInThisContext(code, { filename: f });
@@ -1586,6 +1587,231 @@ S.seed();
   tEq(c.taxable, 74939200, '应纳税所得额 749,392.00');
   tEq(c.isSmall, true, '小微标识');
   tEq(c.tax, 3746960, '小微 5% 税 37,469.60（749,392×5%）');
+})();
+
+/* ---------- 24. chunk 7：财务报表 ---------- */
+section('chunk 7 · 财务报表');
+S.seed();
+/* 演示场景：种子剩余 6 张凭证全部过账 → 折旧 → 工资计提+发放 → 增值税申报+缴款
+ * → 企税申报（利润为负时税额 0）→ 结转损益，然后跑三张表。 */
+(function () {
+  var n = 0;
+  S.get('vouchers').forEach(function (v) {
+    if (v.period === LP && v.status !== '已过账') { V.audit(v.id, '李强'); if (V.post(v.id).ok) n++; }
+  });
+  tEq(n, 6, '种子剩余 6 张凭证全部过账（0007–0012）');
+})();
+tEq(FMAssets.runDepreciation(LP).ok, true, '计提 11 月折旧成功');
+tEq(FMPayroll.accrue(LP).ok, true, '计提 11 月工资成功');
+tEq(FMPayroll.pay(LP).ok, true, '发放 11 月工资成功');
+var fv7 = FMTax.fileVAT(LP);
+tEq(fv7.ok && fv7.record.amount > 0, true, '申报增值税（应纳 > 0，' + S.fmt(fv7.ok ? fv7.record.amount : 0) + '）');
+var pv7 = FMTax.payTax('TAX-' + LP + '-VAT');
+tEq(pv7.ok, true, '缴纳增值税及附加成功');
+tEq(FMTax.fileCIT(LP).ok, true, '申报企业所得税成功（利润为负税额 0）');
+tEq(FMClosing.carryForward(LP).ok, true, '结转 11 月损益成功');
+
+/* 独立复算助手：本期已过账（剔除结转损益凭证）借向净额，不依赖 FMReports 内部实现 */
+function plNet7(prefix) {
+  var d = 0, c = 0, vm = {};
+  S.get('vouchers').forEach(function (v) { vm[v.id] = v; });
+  S.get('entries').forEach(function (e) {
+    var v = vm[e.voucherId];
+    if (!v || v.period !== LP || v.status !== '已过账') return;
+    if (String(v.summary || '').indexOf('结转本期损益') === 0) return;
+    if (String(e.accountCode).indexOf(prefix) !== 0) return;
+    d += e.debit || 0; c += e.credit || 0;
+  });
+  return d - c;
+}
+function leafSum7(category, period) {
+  var sum = 0;
+  A.leaves().forEach(function (a) { if (a.category === category) sum += A.balance(a.code, period); });
+  return sum;
+}
+
+/* —— 资产负债表 —— */
+var bs7 = FMReports.balanceSheet(LP);
+tEq(bs7.balanced, true, '资产负债表平衡：资产总计 = 负债 + 权益');
+t(Math.abs(bs7.diff) <= 1, '资产负债差额 ≤ 1 分（差额 ' + bs7.diff + ' 分）');
+tEq(bs7.assets[0].label, '货币资金', '资产第一行是货币资金');
+tEq(bs7.assets[0].amount, A.balance('1001', LP) + A.balance('1002', LP), '货币资金 = 1001 + 1002 余额');
+(function () {
+  var sum = 0;
+  A.leaves().forEach(function (a) {
+    if (String(a.code).indexOf('1001') === 0 || String(a.code).indexOf('1002') === 0) sum += A.balance(a.code, LP);
+  });
+  tEq(bs7.assets[0].amount, sum, '货币资金 = 末级子目余额之和（独立复算，父科目不重复算）');
+})();
+tEq(bs7.assets.filter(function (l) { return l.label === '应收账款'; })[0].amount, A.balance('1122', LP), '应收账款 = 1122');
+tEq(bs7.assets.filter(function (l) { return l.label === '固定资产净值'; })[0].amount,
+  A.balance('1601', LP) - A.balance('1602', LP), '固定资产净值 = 1601 − 1602');
+tEq(bs7.pnlNet, 0, '结转后未结转损益净额为 0');
+tEq(bs7.equity[3].label, '未分配利润', '权益第四行是未分配利润');
+tEq(bs7.equity[3].amount, A.balance('3103', LP) + A.balance('310405', LP),
+  '未分配利润 = 3103 本年利润 + 3104-未分配利润 310405 期末余额');
+tEq(bs7.totalEquity, leafSum7('所有者权益', LP), '权益合计 = 全部权益末级余额之和（独立复算）');
+(function () {
+  // 独立复算：借向资产末级余额 + 成本类末级余额 − 贷向（减值/折旧/坏账）资产末级余额
+  var sum = 0;
+  A.leaves().forEach(function (a) {
+    if (a.category === '资产') sum += a.direction === '借' ? A.balance(a.code, LP) : -A.balance(a.code, LP);
+    else if (a.category === '成本') sum += A.balance(a.code, LP);
+  });
+  tEq(bs7.totalAssets, sum, '资产总计 = 借向资产 + 成本类 − 贷向减项（独立复算）');
+})();
+(function () {
+  var sum = 0;
+  A.leaves().forEach(function (a) {
+    if (a.category !== '负债') return;
+    var b = A.balance(a.code, LP);
+    sum += a.direction === '贷' ? b : -b; // 借向负债明细（进项税额等）作减项
+  });
+  tEq(bs7.totalLiabilities, sum, '负债合计 = 负债末级余额按方向净额（独立复算）');
+})();
+tEq(bs7.totalAssets, bs7.totalLiabilities + bs7.totalEquity, '资产总计 = 负债合计 + 权益合计（总额恒等式）');
+t(bs7.assets.every(function (l) { return Number.isInteger(l.amount); }), '报表金额全部为整数分');
+
+/* —— 利润表（全量过账后为净亏损：演示数据成本费用大于收入） —— */
+var is7 = FMReports.incomeStatement(LP);
+tEq(is7.revenue, 165000000, '营业收入 = 6001 本期贷方发生额 1,650,000（0002 + 0009）');
+tEq(is7.revenue, -plNet7('6001'), '营业收入与独立复算一致（6001 贷向净额）');
+tEq(is7.cost, 115500000, '营业成本 = 5001 本期借方发生额 1,155,000（结转销售成本已过账）');
+tEq(is7.salesExpense, plNet7('5201'), '销售费用 = 5201 本期净发生额（独立复算）');
+tEq(is7.adminExpense, plNet7('5301'), '管理费用 = 5301 本期净发生额（独立复算）');
+tEq(is7.manufacturingExpense, plNet7('4101'), '制造费用 = 4101 本期净发生额（折旧+生产/仓储工资社保）');
+tEq(is7.financeExpense, 725000, '财务费用 = 5401 借款利息 7,250');
+tEq(is7.taxes, fv7.surtax.total, '税金及附加 = 5101 附加税计提额');
+tEq(is7.operatingProfit, is7.revenue + is7.otherOperatingIncome - is7.cost - is7.manufacturingExpense -
+  is7.taxes - is7.salesExpense - is7.adminExpense - is7.financeExpense - is7.otherOperatingExpense,
+  '营业利润 = 收入 − 成本 − 制造费用 − 税金及附加 − 三费');
+tEq(is7.profitBeforeTax, is7.operatingProfit + is7.nonOperatingNet, '利润总额 = 营业利润 + 营业外收支净额');
+tEq(is7.incomeTax, 0, '利润为负时所得税费用为 0');
+tEq(is7.netProfit, is7.profitBeforeTax - is7.incomeTax, '净利润 = 利润总额 − 所得税费用');
+tEq(is7.netProfit + is7.manufacturingExpense, A.balance('3103', LP) - 68520000,
+  '净利润 + 制造费用（4101 不结转）= 3103 期末余额 − 期初 685,200');
+t(is7.netProfit < 0, '全量过账+计提后为净亏损（' + S.fmt(is7.netProfit) + '，演示数据如此）');
+
+/* —— 现金流量表 —— */
+var cf7 = FMReports.cashFlow(LP);
+tEq(cf7.netIncrease, cf7.operating.net + cf7.investing.net + cf7.financing.net, '三项净额之和 = 现金净增加额');
+tEq(cf7.closingCash, cf7.openingCash + cf7.netIncrease, '净增加额 + 期初现金 = 期末现金');
+tEq(cf7.checkVsBalanceSheet.diff, 0, '期末现金 = 资产负债表货币资金（差 0）');
+tEq(cf7.checkVsBalanceSheet.balanced, true, '期末现金与货币资金校验通过');
+tEq(cf7.closingCash, bs7.assets[0].amount, '期末现金与资产负债表货币资金直接相等');
+(function () {
+  var sum = 0;
+  ['1001', '100201', '100202'].forEach(function (code) {
+    sum += FMLedger.accountBalance(code, LP).opening;
+  });
+  tEq(cf7.openingCash, sum, '期初现金 = 现金科目期初余额（独立复算）');
+})();
+(function () {
+  var vm = {}, net = 0;
+  S.get('vouchers').forEach(function (v) { vm[v.id] = v; });
+  S.get('entries').forEach(function (e) {
+    var v = vm[e.voucherId];
+    if (!v || v.period !== LP || v.status !== '已过账') return;
+    var code = String(e.accountCode);
+    if (code === '1001' || code === '100201' || code === '100202') net += (e.debit || 0) - (e.credit || 0);
+  });
+  tEq(cf7.netIncrease, net, '现金净增加额 = 凭证现金分录轧差（独立复算）');
+  tEq(cf7.checkVsJournal.match, true, '双源核对：凭证现金发生额 = 出纳日记账发生额');
+})();
+tEq(cf7.operating.inDetail.sales, 65000000 + 50850000, '销售收现 = 0003 收款 650,000 + 0009 现销 508,500');
+tEq(cf7.operating.outDetail.staff, 85240000 + 21842050, '支付职工现金 = 代发工资 852,400 + 实发 218,420.50');
+tEq(cf7.operating.outDetail.tax, 23253000 + pv7.total, '支付税费 = 缴 10 月税费 232,530 + 本期增值税及附加缴款');
+tEq(cf7.operating.outDetail.purchase, 48000000, '购买商品付现 480,000');
+tEq(cf7.operating.outDetail.other, 6540000 + 865040, '其他经营流出 = 租金 65,400 + 差旅 8,650.40（租金进项税不算缴税）');
+tEq(cf7.operating.out, cf7.operating.outDetail.purchase + cf7.operating.outDetail.staff +
+  cf7.operating.outDetail.tax + cf7.operating.outDetail.other, '经营流出小计 = 各明细之和');
+tEq(cf7.investing.net, 0, '投资活动净额 = 0（本期尚无购建/处置）');
+tEq(cf7.financing.outDetail.interestDividend, 1450000, '偿付利息付现 14,500（冲 10 月计提 + 本期利息）');
+tEq(cf7.financing.net, -1450000, '筹资活动净额 = −14,500');
+
+/* —— 报表只读：计算不改 state —— */
+(function () {
+  var before = JSON.stringify(S.get());
+  FMReports.balanceSheet(LP); FMReports.incomeStatement(LP); FMReports.cashFlow(LP);
+  tEq(JSON.stringify(S.get()), before, '三张表计算不修改 state（只读口径）');
+})();
+
+/* —— 鲁棒性：新增购建凭证后三表仍自洽 —— */
+(function () {
+  var r = V.create({ date: '2026-11-26', summary: '测试购入固定资产', maker: '王丽', attachCount: 0, entries: [
+    { accountCode: '1601', summary: '购入设备一台', debit: '100000.00', credit: 0, aux: {} },
+    { accountCode: '100201', summary: '银行支付设备款', debit: 0, credit: '100000.00', aux: {} }] });
+  V.audit(r.id, '李强'); V.post(r.id);
+  var b2 = FMReports.balanceSheet(LP);
+  tEq(b2.balanced, true, '新增购建凭证后资产负债表仍平衡');
+  tEq(b2.assets[0].amount, bs7.assets[0].amount - 10000000, '购建后货币资金减少 100,000');
+  var fa = b2.assets.filter(function (l) { return l.label === '固定资产净值'; })[0];
+  tEq(fa.amount, A.balance('1601', LP) - A.balance('1602', LP), '固定资产净值仍 = 1601 − 1602（含新购）');
+  var c2 = FMReports.cashFlow(LP);
+  tEq(c2.investing.out, 10000000, '购建固定资产付现 100,000 进投资活动流出');
+  tEq(c2.investing.net, -10000000, '投资活动净额 = −100,000');
+  tEq(c2.checkVsBalanceSheet.diff, 0, '期末现金仍与资产负债表货币资金一致');
+})();
+
+/* 渲染冒烟 + 导出 CSV（Node 下 exportCSV 返回字符串） */
+smoke(function () {
+  var el = { innerHTML: '', onclick: null };
+  FMReports.renderReports(el);
+  ['资产负债表', '资产总计', '负债和所有者权益总计', '导出 CSV'].forEach(function (k) {
+    if (el.innerHTML.indexOf(k) < 0) throw new Error('缺 ' + k);
+  });
+}, 'renderReports（资产负债表页签）');
+smoke(function () {
+  var el = { innerHTML: '', onclick: null };
+  FMReports.renderReports(el);
+  el.onclick({ target: { dataset: { action: 'tab', tab: 'is' } } });
+  ['利润表', '营业收入', '净利润', '利润总额'].forEach(function (k) {
+    if (el.innerHTML.indexOf(k) < 0) throw new Error('缺 ' + k);
+  });
+  el.onclick({ target: { dataset: { action: 'tab', tab: 'cf' } } });
+  ['现金流量表', '经营活动产生的现金流量净额', '现金及现金等价物净增加额', '期末现金及现金等价物余额'].forEach(function (k) {
+    if (el.innerHTML.indexOf(k) < 0) throw new Error('缺 ' + k);
+  });
+  el.onclick({ target: { dataset: { action: 'tab', tab: 'bs' } } });
+}, 'renderReports（利润表/现金流量表页签切换）');
+smoke(function () {
+  var el = { innerHTML: '', onclick: null }, exported = '';
+  FMReports.renderReports(el);
+  global.FMToast = function (m) { exported = m; };
+  el.onclick({ target: { dataset: { action: 'export' } } });
+  if (exported.indexOf('资产负债表') < 0) throw new Error('导出提示缺失');
+}, 'renderReports（导出 CSV 触发下载/字符串）');
+
+/* —— 所得税非零情形：fresh seed 直接申报企税 —— */
+section('chunk 7 · 利润表（所得税非零情形）');
+S.seed();
+var fc7 = FMTax.fileCIT(LP);
+tEq(fc7.ok && fc7.record.amount, 6000000, '所得税 = 1,200,000 × 5% = 60,000（fresh seed）');
+var is7b = FMReports.incomeStatement(LP);
+tEq(is7b.incomeTax, 6000000, '利润表所得税费用 = 6801 发生额 60,000');
+tEq(is7b.profitBeforeTax, 120000000, '利润总额 1,200,000（fresh seed 已过账口径）');
+tEq(is7b.netProfit, 114000000, '净利润 = 1,200,000 − 60,000 = 1,140,000');
+tEq(FMClosing.carryForward(LP).ok, true, '结转损益成功');
+tEq(FMReports.incomeStatement(LP).netProfit, A.balance('3103', LP) - 68520000,
+  '结转后净利润 = 3103 期末余额 − 期初 685,200');
+tEq(FMReports.balanceSheet(LP).equity[3].amount, A.balance('3103', LP) + A.balance('310405', LP),
+  '未分配利润 = 3103 + 310405 期末余额');
+tEq(FMReports.balanceSheet(LP).balanced, true, '资产负债表仍平衡');
+
+/* —— 未过账 / 未审核凭证不进报表 —— */
+section('chunk 7 · 未过账凭证不进报表');
+S.seed();
+(function () {
+  var bs0 = FMReports.balanceSheet(LP), is0 = FMReports.incomeStatement(LP), cf0 = FMReports.cashFlow(LP);
+  var r = V.create({ date: '2026-11-28', summary: '测试未过账销售', maker: '王丽', attachCount: 0, entries: [
+    { accountCode: '1122', summary: '赊销（测试未过账）', debit: '50000.00', credit: 0, aux: { customer: 'C001' } },
+    { accountCode: '600101', summary: '赊销（测试未过账）', debit: 0, credit: '50000.00', aux: {} }] });
+  V.audit(r.id, '李强'); // 只审核、不过账
+  tEq(FMReports.incomeStatement(LP).revenue, is0.revenue, '已审核未过账凭证不进利润表');
+  tEq(FMReports.balanceSheet(LP).totalAssets, bs0.totalAssets, '已审核未过账凭证不进资产负债表');
+  tEq(FMReports.cashFlow(LP).netIncrease, cf0.netIncrease, '已审核未过账凭证不进现金流量表（净额不变）');
+  V.post(r.id);
+  tEq(FMReports.incomeStatement(LP).revenue, is0.revenue + 5000000, '过账后进入利润表（+50,000）');
 })();
 
 /* ---------- 汇总 ---------- */
