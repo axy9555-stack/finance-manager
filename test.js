@@ -17,7 +17,7 @@ global.FMToast = function () {};
 var fs = require('fs');
 var path = require('path');
 ['js/taxrules.js', 'js/store.js', 'js/accounts.js', 'js/voucher.js', 'js/dashboard.js',
- 'js/ledger.js', 'js/closing.js', 'js/opening.js', 'js/arap.js', 'js/cashier.js'].forEach(function (f) {
+ 'js/ledger.js', 'js/closing.js', 'js/opening.js', 'js/arap.js', 'js/cashier.js', 'js/assets.js'].forEach(function (f) {
   /* 在全局作用域执行，等价于浏览器的 <script src> */
   var code = fs.readFileSync(path.join(__dirname, f), 'utf8');
   require('vm').runInThisContext(code, { filename: f });
@@ -95,8 +95,8 @@ t(!vr.ok && vr.reason.indexOf('9999') >= 0 && vr.reason.indexOf('不存在') >= 
 section('期初 / 试算平衡');
 var ot = A.openingTrial();
 tEq(ot.balanced, true, '期初试算平衡');
-tEq(ot.debit, 2032735050, '期初借方合计 = 20,327,350.50（2032735050 分）');
-tEq(ot.credit, 2032735050, '期初贷方合计 = 20,327,350.50（2032735050 分）');
+tEq(ot.debit, 2675735050, '期初借方合计 = 26,757,350.50（2675735050 分，含固定资产卡片期初）');
+tEq(ot.credit, 2675735050, '期初贷方合计 = 26,757,350.50（2675735050 分）');
 tEq(ot.diff, 0, '期初借贷差额为 0');
 var tb0 = V.trialBalance(PERIOD);
 tEq(tb0.balanced, true, '当前期间已过账凭证试算平衡');
@@ -463,8 +463,8 @@ tEq(bs.balanced, true, '科目余额表平衡');
 tEq(bs.closing.debit, bs.closing.credit, '余额表借方合计 = 贷方合计（' + S.fmt(bs.closing.debit) + ' 元）');
 tEq(bs.diff, 0, '余额表差额为 0');
 tEq(bs.reason, '', '平衡时无报错原因');
-tEq(bs.opening.debit, 2032735050, '余额表期初借方合计 20,327,350.50');
-tEq(bs.opening.credit, 2032735050, '余额表期初贷方合计 20,327,350.50');
+tEq(bs.opening.debit, 2675735050, '余额表期初借方合计 26,757,350.50（含固定资产）');
+tEq(bs.opening.credit, 2675735050, '余额表期初贷方合计 26,757,350.50（含固定资产）');
 
 var dl = FMLedger.detailLedger('100201', LP);
 t(dl.rows.length > 0, '明细账有已过账分录行（' + dl.rows.length + ' 行）');
@@ -940,6 +940,266 @@ var seedVCount = S.get('vouchers').length, seedECount = S.get('entries').length;
   tEq(S.load().taxRecords.length, 0, '种子默认为空的键存 [] 后保持 []（不误判）');
   S.seed(); /* 恢复干净种子 */
 })();
+
+/* ---------- 19. chunk 4：固定资产 ---------- */
+S.seed();
+section('chunk 4 · 固定资产');
+var cards = FMAssets.list();
+tEq(cards.length, 6, '种子资产卡片 6 张');
+t(cards.every(function (c) {
+  return c.code && c.name && c.category && c.purchaseDate && typeof c.cost === 'number' &&
+    typeof c.months === 'number' && typeof c.residualRate === 'number' && c.method &&
+    c.dept && typeof c.accumulated === 'number' && typeof c.monthsElapsed === 'number' && c.status === '在用';
+}), '卡片字段齐全且状态在用');
+var sumCost = cards.reduce(function (s, c) { return s + c.cost; }, 0);
+var sumAcc = cards.reduce(function (s, c) { return s + c.accumulated; }, 0);
+tEq(sumCost, 1028000000, '卡片原值合计 10,280,000.00');
+tEq(A.balance('1601', LP), sumCost, '卡片原值合计 = 1601 科目余额');
+tEq(sumAcc, 275325000, '卡片累计折旧合计 2,753,250.00');
+tEq(A.balance('1602', LP), sumAcc, '卡片累计折旧合计 = 1602 科目余额');
+(function () {
+  var ok = cards.every(function (c) {
+    var residual = Math.round(c.cost * c.residualRate);
+    var monthly = Math.floor((c.cost - residual) / c.months);
+    var me = (Number('2026') - Number(c.purchaseDate.slice(0, 4))) * 12 +
+      (Number('10') - Number(c.purchaseDate.slice(5, 7))) + 1; /* 期初 2026-10 前已提月份 */
+    me = Math.min(c.months, me);
+    return c.monthsElapsed === me && c.accumulated === me * monthly;
+  });
+  t(ok, '已提月份与购入日期一致且累计折旧 = 月数 × 月折旧（直线法）');
+})();
+tEq(A.openingTrial().balanced, true, '新期初试算仍平衡');
+tEq(A.openingTrial().debit, 2675735050, '新期初借方合计 26,757,350.50');
+tEq(FMAssets.netBookValue('ZC001'), 611200000, 'ZC001 净值 = 8,000,000 − 1,888,000 = 6,112,000.00');
+tEq(FMAssets.netBookValue('ZC999'), null, '不存在资产净值返回 null');
+
+/* 折旧理论：直线法 */
+tEq(FMAssets.depreciation('ZC002', LP), 950000, '直线法月折旧 = (1,200,000 − 60,000) / 120 = 9,500.00');
+tEq(FMAssets.depreciation('ZC001', LP), 3200000, 'ZC001 月折旧 32,000.00');
+tEq(FMAssets.depreciation('ZC005', '2026-10'), 200000, '历史期间也能算折旧');
+tEq(FMAssets.depreciation('ZC001', '2020-01'), 0, '购入前期间应提 0');
+tEq(FMAssets.depreciation('ZC999', LP), 0, '不存在资产应提 0');
+
+/* 临时卡片：提满 / 双倍余额递减 / 年数总和（验完移除，不进汇总） */
+function ymList(from, n) {
+  var out = [], y = Number(from.slice(0, 4)), m = Number(from.slice(5, 7));
+  for (var i = 0; i < n; i++) {
+    out.push(y + '-' + ('0' + m).slice(-2));
+    m++; if (m > 12) { m = 1; y++; }
+  }
+  return out;
+}
+(function () {
+  var tmp = [
+    { code: 'ZCT1', name: '提满测试', category: '电子设备', purchaseDate: '2023-01-01', cost: 3600000, months: 36, residualRate: 0.05, method: '直线法', dept: 'D02', location: '', status: '在用', accumulated: 0, monthsElapsed: 0 },
+    { code: 'ZCT2', name: '双倍测试', category: '电子设备', purchaseDate: '2026-01-01', cost: 3600000, months: 48, residualRate: 0.05, method: '双倍余额递减法', dept: 'D02', location: '', status: '在用', accumulated: 0, monthsElapsed: 0 },
+    { code: 'ZCT3', name: '年数总和测试', category: '电子设备', purchaseDate: '2026-01-01', cost: 3600000, months: 36, residualRate: 0.05, method: '年数总和法', dept: 'D02', location: '', status: '在用', accumulated: 0, monthsElapsed: 0 }
+  ];
+  tmp.forEach(function (c) { S.get('assets').push(c); });
+  tEq(FMAssets.depreciation('ZCT1', LP), 0, '超过使用年限（第 47 月 > 36 月）应提 0（提满）');
+  /* 双倍余额递减（4 年）：首年 = 原值 × 2/4 / 12 = 150,000；第 2 年按年初净值递减；最后 2 年直线 */
+  tEq(FMAssets.depreciation('ZCT2', '2026-01'), 150000, '双倍余额递减首月 = 原值×2/年数/12');
+  tEq(FMAssets.depreciation('ZCT2', '2026-06'), 150000, '双倍余额递减首年内各月相同');
+  tEq(FMAssets.depreciation('ZCT2', '2027-01'), 75000, '双倍余额递减第 2 年按年初净值递减');
+  tEq(FMAssets.depreciation('ZCT2', '2029-01'), 30000, '最后 2 年改直线法提完');
+  var sum2 = ymList('2026-01', 48).reduce(function (s, p) { return s + FMAssets.depreciation('ZCT2', p); }, 0);
+  tEq(sum2, 3420000, '双倍余额递减全程提满 = 原值 − 残值（不留尾差）');
+  /* 年数总和：首年 = 基数 × 3/6 / 12 = 142,500，逐年递减 */
+  tEq(FMAssets.depreciation('ZCT3', '2026-01'), 142500, '年数总和首年月折旧 = (原值−残值)×3/6/12');
+  tEq(FMAssets.depreciation('ZCT3', '2027-01'), 95000, '年数总和第 2 年 = 基数×2/6/12');
+  tEq(FMAssets.depreciation('ZCT3', '2028-01'), 47500, '年数总和第 3 年 = 基数×1/6/12');
+  t(FMAssets.depreciation('ZCT3', '2026-01') > FMAssets.depreciation('ZCT3', '2027-01') &&
+    FMAssets.depreciation('ZCT3', '2027-01') > FMAssets.depreciation('ZCT3', '2028-01'), '年数总和首年最大、逐年递减');
+  var sum3 = ymList('2026-01', 36).reduce(function (s, p) { return s + FMAssets.depreciation('ZCT3', p); }, 0);
+  tEq(sum3, 3420000, '年数总和全程提满（不留尾差）');
+  tmp.forEach(function (c) {
+    var i = S.get('assets').indexOf(S.get('assets').filter(function (x) { return x.code === c.code; })[0]);
+    S.get('assets').splice(i, 1);
+  });
+  tEq(FMAssets.list().length, 6, '临时卡片已移除');
+})();
+
+/* 当月折旧汇总（种子 6 张） */
+var md = FMAssets.monthlyDepreciation(LP);
+tEq(md.total, 5650000, '2026-11 应提合计 56,500.00');
+(function () {
+  function dept(name) { var d = md.byDept.filter(function (x) { return x.dept === name; })[0]; return d ? d.amount : 0; }
+  tEq(dept('D06'), 1425000, 'D06（制造）1,425,000（两条生产线）');
+  tEq(dept('D08'), 700000, 'D08（销售）700,000（货车）');
+  tEq(dept('D01') + dept('D07') + dept('D02'), 3525000, '管理部门合计 3,525,000');
+  var e4101 = md.entries.filter(function (e) { return e.accountCode === '4101'; });
+  tEq(e4101.length, 2, '制造费用 4101 两行（两条生产线，摘要带资产编码）');
+  tEq(e4101.reduce(function (s, e) { return s + e.debit; }, 0), 1425000, '4101 借方合计');
+  t(md.entries.some(function (e) { return e.accountCode === '520106'; }), '销售部门折旧进 520106');
+  t(md.entries.every(function (e) { return /ZC\d+/.test(e.summary); }), '折旧行摘要注明资产编码');
+  tEq(md.entries.reduce(function (s, e) { return s + e.debit; }, 0), md.total, '折旧行借方合计 = 汇总');
+})();
+
+/* 新增：校验拒绝路径 */
+r = FMAssets.add({ cost: 0, months: 36, category: '电子设备' });
+t(!r.ok && /原值/.test(r.reason), '原值 ≤0 拒绝');
+r = FMAssets.add({ cost: 100000, months: 601, category: '电子设备' });
+t(!r.ok && /1–600/.test(r.reason), '年限 >600 月拒绝');
+r = FMAssets.add({ cost: 100000, months: 36, residualRate: 0.51, category: '电子设备' });
+t(!r.ok && /0–50%/.test(r.reason), '残值率 >50% 拒绝');
+r = FMAssets.add({ cost: 100000, months: 36, category: '无形资产' });
+t(!r.ok && /类别/.test(r.reason), '非法类别拒绝');
+r = FMAssets.add({ cost: 12000000, months: 24, category: '机器设备', purchaseDate: '2026-11-05' });
+t(!r.ok && /最低折旧年限/.test(r.reason) && /10 年/.test(r.reason), '机器 24 月低于最低 10 年拒绝');
+r = FMAssets.add({ cost: 100000, months: 36, category: '电子设备', purchaseDate: '2026-12-01' });
+t(!r.ok && /晚于当前期间末/.test(r.reason), '购入日期晚于期间末拒绝');
+r = FMAssets.add({ cost: 100000, months: 36, category: '电子设备', purchaseDate: '2026-10-20' });
+t(!r.ok && /不在当前会计期间/.test(r.reason), '购入日期在期间之前（无法生成凭证）拒绝');
+r = FMAssets.add({ cost: 100000, months: 36, category: '电子设备', purchaseDate: '2026-11-05', payMethod: 'credit' });
+t(!r.ok && /供应商/.test(r.reason), '赊购未指定供应商拒绝');
+r = FMAssets.add({ cost: 100000, months: 36, category: '电子设备', purchaseDate: '2026-11-05', payMethod: 'cash', name: '现金购置' });
+tEq(r.ok, true, '现金购置成功（贷 1001）');
+(function () {
+  var v = S.get('vouchers').filter(function (x) { return x.id === r.voucherId; })[0];
+  tEq(v.status, '已过账', '购入凭证已审核并过账');
+  var es = V.entriesOf(r.voucherId);
+  t(es.some(function (e) { return e.accountCode === '1601' && e.debit === 100000; }), '购入凭证借 1601');
+  t(es.some(function (e) { return e.accountCode === '1001' && e.credit === 100000; }), '现金购置贷 1001');
+  tEq(v.maker, '系统购置', '购入凭证制单人为系统购置');
+})();
+
+/* 银行购置 + 赊购 */
+r = FMAssets.add({ name: '测试服务器', category: '电子设备', cost: 1200000, months: 36, residualRate: 0.05,
+  purchaseDate: '2026-11-05', dept: 'D02', location: '机房', payMethod: 'bank' });
+tEq(r.ok, true, '银行购置 ZC007 成功');
+tEq(r.card.code, 'ZC008', '自动编号接续（银行购置为第 2 张新增卡）');
+(function () {
+  var es = V.entriesOf(r.voucherId);
+  t(es.some(function (e) { return e.accountCode === '1601' && e.debit === 1200000; }), '购置凭证借 1601 原值');
+  t(es.some(function (e) { return e.accountCode === '100201' && e.credit === 1200000; }), '银行购置贷 100201');
+})();
+tEq(A.balance('1601', LP), 1028000000 + 1200000 + 100000, '购入后 1601 余额同步增加');
+r = FMAssets.add({ name: '测试加工机', category: '机器设备', cost: 2000000, months: 120, residualRate: 0.05,
+  purchaseDate: '2026-11-06', dept: 'D06', payMethod: 'credit', supplier: 'S003' });
+tEq(r.ok, true, '赊购 ZC008 成功');
+(function () {
+  var es = V.entriesOf(r.voucherId);
+  var row = es.filter(function (e) { return e.accountCode === '2202'; })[0];
+  t(!!row && row.credit === 2000000 && row.aux.supplier === 'S003', '赊购贷 2202 且带供应商辅助核算');
+})();
+
+/* 计提本月折旧 */
+tEq(FMAssets.runDepreciation('2026-12').ok, false, '非当前期间不能计提');
+var rd = FMAssets.runDepreciation(LP);
+tEq(rd.ok, true, '计提 2026-11 折旧成功');
+tEq(rd.total, 5650000 + 2638 + 31666 + 15833, '计提合计 = 种子 56,500.00 + 新增三卡（2,638 + 31,666 + 15,833）= 57,001.37');
+(function () {
+  var v = S.get('vouchers').filter(function (x) { return x.id === rd.id; })[0];
+  tEq(v.status, '已过账', '折旧凭证已过账');
+  tEq(v.maker, '系统折旧', '折旧凭证制单人为系统折旧');
+  t(v.summary.indexOf('2026-11') >= 0, '折旧凭证摘要注明期间');
+  var es = V.entriesOf(rd.id);
+  var dt = es.reduce(function (s, e) { return s + e.debit; }, 0);
+  var ct = es.reduce(function (s, e) { return s + e.credit; }, 0);
+  tEq(dt, ct, '折旧凭证借贷平衡');
+  tEq(dt, rd.total, '折旧凭证借方合计 = 计提合计');
+  t(es.some(function (e) { return e.accountCode === '1602' && e.credit === rd.total; }), '贷 1602 累计折旧');
+  t(es.some(function (e) { return e.accountCode === '4101'; }), '生产部门折旧借 4101 制造费用');
+})();
+var zc1 = FMAssets.list().filter(function (c) { return c.code === 'ZC001'; })[0];
+tEq(zc1.accumulated, 188800000 + 3200000, 'ZC001 累计折旧已更新（1,920,000.00）');
+tEq(zc1.monthsElapsed, 60, 'ZC001 已提月份 60');
+var zc7 = FMAssets.list().filter(function (c) { return c.code === 'ZC007'; })[0];
+tEq(zc7.accumulated, 2638, '现金购置卡首月折旧已入累计（95,000/36 取整 26.38）');
+tEq(zc7.monthsElapsed, 1, '新卡已提月份 1');
+tEq(FMAssets.list().filter(function (c) { return c.code === 'ZC008'; })[0].accumulated, 31666, 'ZC008 首月折旧 316.66');
+tEq(FMAssets.list().filter(function (c) { return c.code === 'ZC009'; })[0].accumulated, 15833, 'ZC009 首月折旧 158.33');
+r = FMAssets.runDepreciation(LP);
+t(!r.ok && r.reason === '本期折旧已计提', '重复计提返回本期折旧已计提');
+(function () {
+  var sumA = FMAssets.list().reduce(function (s, c) { return s + c.accumulated; }, 0);
+  tEq(sumA, A.balance('1602', LP), '卡片累计折旧合计 = 1602 余额（计提后）');
+  var sumC = FMAssets.list().reduce(function (s, c) { return s + c.cost; }, 0);
+  tEq(sumC, A.balance('1601', LP), '卡片原值合计 = 1601 余额（计提后）');
+})();
+
+/* 已结账期间不能计提 */
+(function () {
+  var cp = S.get('closedPeriods') || [];
+  cp.push(LP);
+  S.set('closedPeriods', cp);
+  var rr = FMAssets.runDepreciation(LP);
+  t(!rr.ok && /已结账/.test(rr.reason), '已结账期间不能计提折旧');
+  S.set('closedPeriods', (S.get('closedPeriods') || []).filter(function (p) { return p !== LP; }));
+})();
+
+/* 处置：亏损（货车） */
+tEq(FMAssets.netBookValue('ZC004'), 35000000 - 23100000, 'ZC004 处置前净值 119,000.00');
+r = FMAssets.dispose('ZC999', LP, 1000000);
+t(!r.ok && /不存在/.test(r.reason), '处置不存在资产拒绝');
+r = FMAssets.dispose('ZC004', LP, -1);
+t(!r.ok && /处置价/.test(r.reason), '处置价非法拒绝');
+var d1 = FMAssets.dispose('ZC004', LP, 10000000);
+tEq(d1.ok, true, '处置 ZC004 成功（处置价 100,000 < 净值 119,000）');
+tEq(d1.loss, 1900000, '处置损失 = 净值 − 处置价 = 19,000.00');
+tEq(d1.gain, 0, '无处置利得');
+(function () {
+  var v = S.get('vouchers').filter(function (x) { return x.id === d1.id; })[0];
+  tEq(v.status, '已过账', '处置凭证已过账');
+  var es = V.entriesOf(d1.id);
+  tEq(es.reduce(function (s, e) { return s + e.debit; }, 0), es.reduce(function (s, e) { return s + e.credit; }, 0), '处置凭证借贷平衡');
+  t(es.some(function (e) { return e.accountCode === '1602' && e.debit === 23100000; }), '借 1602 转销累计折旧');
+  t(es.some(function (e) { return e.accountCode === '100201' && e.debit === 10000000; }), '借 100201 处置收款');
+  t(es.some(function (e) { return e.accountCode === '6301' && e.debit === 1900000; }), '借 6301 处置损失');
+  t(es.some(function (e) { return e.accountCode === '1601' && e.credit === 35000000; }), '贷 1601 转销原值');
+})();
+var zc4 = FMAssets.list().filter(function (c) { return c.code === 'ZC004'; })[0];
+tEq(zc4.status, '已处置', '处置后卡片状态已处置');
+tEq(zc4.disposeDate, '2026-11-30', '处置日期已记录');
+tEq(zc4.disposePrice, 10000000, '处置价已记录');
+tEq(FMAssets.depreciation('ZC004', '2026-11'), 0, '已处置资产不再折旧');
+tEq(A.balance('1601', LP), 1031300000 - 35000000, '处置后 1601 余额减少原值（1,031.3 万 − 35 万）');
+
+/* 处置：盈利（办公电脑） */
+tEq(FMAssets.netBookValue('ZC006'), 5000000 - 2375000, 'ZC006 处置前净值 26,250.00');
+var d2 = FMAssets.dispose('ZC006', LP, 3000000);
+tEq(d2.ok, true, '处置 ZC006 成功（处置价 30,000 > 净值 26,250）');
+tEq(d2.gain, 375000, '处置利得 = 处置价 − 净值 = 3,750.00');
+(function () {
+  var es = V.entriesOf(d2.id);
+  t(es.some(function (e) { return e.accountCode === '6301' && e.credit === 375000; }), '贷 6301 处置利得');
+  tEq(es.reduce(function (s, e) { return s + e.debit; }, 0), es.reduce(function (s, e) { return s + e.credit; }, 0), '处置凭证借贷平衡');
+})();
+tEq(FMAssets.list().filter(function (c) { return c.code === 'ZC006'; })[0].status, '已处置', 'ZC006 状态已处置');
+tEq(FMAssets.depreciation('ZC006', '2026-12'), 0, '已处置资产后续期间折旧为 0');
+
+/* 处置：未提满当月折旧自动补提（run 之后再新增的卡，本期还没计提过） */
+r = FMAssets.add({ name: '补提测试机', category: '电子设备', cost: 500000, months: 36, residualRate: 0.05,
+  purchaseDate: '2026-11-08', dept: 'D02', payMethod: 'bank' });
+tEq(r.ok && r.card.code, 'ZC010', '计提后新增 ZC010（本期尚未计提）');
+var d3 = FMAssets.dispose('ZC010', LP, 400000);
+tEq(d3.ok, true, '处置 ZC009 成功');
+tEq(d3.catchup && d3.catchup.amount, 13194, '处置前自动补提当月折旧 131.94');
+(function () {
+  var cu = S.get('vouchers').filter(function (x) { return x.id === d3.catchup.id; })[0];
+  tEq(cu.status, '已过账', '补提凭证已过账');
+  t(/补提/.test(cu.summary) && cu.summary.indexOf('ZC010') >= 0, '补提凭证摘要注明期间与资产编码');
+  var es = V.entriesOf(d3.id);
+  tEq(d3.loss, 86806, '补提后净值 4,868.06，处置价 4,000 → 损失 868.06');
+  tEq(es.reduce(function (s, e) { return s + e.debit; }, 0), es.reduce(function (s, e) { return s + e.credit; }, 0), '处置凭证借贷平衡');
+})();
+tEq(A.balance('1602', LP), 281025137 - 23100000 - 2375000,
+  '处置转销累计折旧后 1602 余额 = 281,025.13 − 231,000 − 2,375（补提 +13,194 与转销相抵后不变）');
+
+/* 已处置资产不进当月汇总 */
+tEq(FMAssets.monthlyDepreciation(LP).total, 5700137 - 700000 - 125000, '已处置资产不进当月折旧汇总');
+
+/* 渲染冒烟 */
+smoke(function () {
+  var el = { innerHTML: '', onclick: null };
+  FMAssets.renderAssets(el);
+  if (el.innerHTML.indexOf('固定资产') < 0 || el.innerHTML.indexOf('折旧明细') < 0) throw new Error('资产页内容缺失');
+}, 'renderAssets');
+smoke(function () {
+  var el = { innerHTML: '', onclick: null };
+  FMAssets.renderAssets(el);
+  if (el.innerHTML.indexOf('已处置') < 0) throw new Error('处置状态未显示');
+}, 'renderAssets（含已处置卡片）');
 
 /* ---------- 汇总 ---------- */
 console.log('');
