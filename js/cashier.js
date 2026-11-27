@@ -12,6 +12,12 @@
   function S() { return root.FMStore; }
   function A() { return root.FMAccounts; }
 
+  /* 种子流水：bankStatements 可能是对象（正常）、数组或缺（chunk 2 旧数据），防御式取 0 行 */
+  function seedStatements(code) {
+    var bs = S().get('bankStatements');
+    return (bs && !Array.isArray(bs) && bs[code]) ? bs[code] : [];
+  }
+
   function currentPeriod() {
     var p = S().get('periods');
     return (p && p.current) || '';
@@ -207,7 +213,7 @@
     html += '</tbody></table>';
 
     /* 银行对账 */
-    var source = K.imported || ((S().get('bankStatements') || {})[K.code]) || [];
+    var source = K.imported || seedStatements(K.code);
     var rec = reconcile(K.code, K.period, source);
     html += '<h3 class="sec-title">银行对账（' + esc(K.code) + ' · ' + esc(K.period) + '）</h3>';
     html += '<div class="filter-bar">粘贴银行流水 CSV（日期,摘要,金额）<br>' +
@@ -242,7 +248,12 @@
       if (!t || t === el || !t.dataset) return;
       var act = t.dataset.action;
       if (act === 'acc') { K.code = t.dataset.code; K.imported = null; renderCashier(el); return; }
-      if (act === 'seed-recon') { K.imported = null; renderCashier(el); return; }
+      if (act === 'seed-recon') {
+        K.imported = null;
+        root.FMToast('已载入种子流水 ' + seedStatements(K.code).length + ' 行', 'ok');
+        renderCashier(el);
+        return;
+      }
       if (act === 'import') {
         var ta = document.getElementById('fm-bank-csv');
         var res = importBank(ta ? ta.value : '');

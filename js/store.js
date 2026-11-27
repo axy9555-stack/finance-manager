@@ -205,7 +205,7 @@
     return { vouchers: vouchers, entries: entries };
   }
 
-  function seed() {
+  function buildSeed() {
     var v = seedVouchers();
     var deptDefs = [['总经办', 4], ['财务部', 6], ['人力资源部', 4], ['行政部', 5], ['采购部', 6], ['仓储物流部', 14],
       ['信息技术部', 4], ['销售一部', 18], ['销售二部', 16], ['市场部', 8], ['客服部', 10], ['审计法务部', 5]];
@@ -235,7 +235,7 @@
         };
       };
     }
-    state = {
+    return {
       company: {
         name: '演示科技有限公司', taxpayerType: 'general', taxpayerTypeName: '一般纳税人', industry: '商贸',
         staffCount: 100, location: 'urban', creditCode: '91310115MA1DEMO26X', legalPerson: '周建国',
@@ -272,6 +272,11 @@
       },
       taxRecords: [], assets: [], payrolls: [], invoices: [], budgets: [], auditLog: []
     };
+  }
+
+  /* 全新种子数据（替换内存并保存）。load() 缺键补默认值时用 buildSeed()，不走这里。 */
+  function seed() {
+    state = buildSeed();
     save();
     return state;
   }
@@ -300,7 +305,16 @@
     }
     if (!parsed || typeof parsed !== 'object' || !parsed.company || !Array.isArray(parsed.accounts)) return seed();
     state = parsed;
-    TOP_KEYS.forEach(function (k) { if (state[k] === undefined) state[k] = []; });
+    var missing = TOP_KEYS.filter(function (k) { return state[k] === undefined; });
+    if (missing.length) {
+      /* 旧版本数据缺新键：从新鲜种子取该键默认值深拷贝补齐（bankStatements 等对象键不再被误填 []）。
+       * 已有键一字不动，用户录入的数据不能丢。 */
+      var tpl = buildSeed();
+      missing.forEach(function (k) {
+        state[k] = JSON.parse(JSON.stringify(tpl[k] === undefined ? [] : tpl[k]));
+      });
+      save();
+    }
     return state;
   }
 

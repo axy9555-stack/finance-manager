@@ -856,6 +856,59 @@ smoke(function () {
   if (el2.innerHTML.indexOf('建设银行') < 0) throw new Error('建行户视图缺失');
 }, 'renderCashier');
 
+/* ---------- 18. chunk 3 修复：旧 state 迁移（缺键补种子默认值） ---------- */
+section('chunk 3 修复 · 旧 state 迁移');
+S.seed();
+var seedStmtsJson = JSON.stringify(S.get('bankStatements'));
+var seedCustCount = S.get('customers').length, seedSupCount = S.get('suppliers').length;
+var seedVCount = S.get('vouchers').length, seedECount = S.get('entries').length;
+
+/* 模拟 chunk 2 时期旧数据：删掉 bankStatements 后 load() 应补回种子流水 */
+(function () {
+  var st = S.get();
+  delete st.bankStatements;
+  S.save();
+  var loaded = S.load();
+  var bs = loaded.bankStatements;
+  t(bs && !Array.isArray(bs) && bs['100201'], 'load() 后 bankStatements 是对象且含 100201（不再被误填空数组）');
+  tEq(bs['100201'].length, 12, '补回种子流水 12 行');
+  tEq(JSON.stringify(bs), seedStmtsJson, '补回内容与种子完全一致（深拷贝，非引用）');
+  var rec = FMCashier.reconcile('100201', LP, bs['100201']);
+  tEq(rec.matched.length, 4, '旧数据修复后种子对账勾对 4 笔');
+  smoke(function () {
+    var el = { innerHTML: '', onclick: null };
+    FMCashier.renderCashier(el);
+    if (el.innerHTML.indexOf('种子流水 12 行') < 0) throw new Error('页面未显示“种子流水 12 行”');
+  }, '旧数据修复后 renderCashier 显示种子流水 12 行');
+})();
+
+/* 再模拟更旧的数据：customers / suppliers 也缺失，凭证分录一条不少 */
+(function () {
+  var st = S.get();
+  delete st.customers;
+  delete st.suppliers;
+  S.save();
+  var loaded = S.load();
+  tEq(loaded.customers.length, seedCustCount, 'load() 补回客户档案（' + seedCustCount + ' 家）');
+  tEq(loaded.suppliers.length, seedSupCount, 'load() 补回供应商档案（' + seedSupCount + ' 家）');
+  tEq(loaded.vouchers.length, seedVCount, '已有凭证一条不少');
+  tEq(loaded.entries.length, seedECount, '已有分录一行不少');
+})();
+
+/* 已有键一字不动：改过凭证状态与流水摘要后 load() 不重置用户数据 */
+(function () {
+  var st = S.get();
+  st.vouchers[0].status = '已过账'; /* 保持，验证不改写 */
+  st.vouchers.push({ id: '记-2026-11-9901', date: '2026-11-20', period: '2026-11', summary: '用户凭证', status: '已过账', maker: '王丽', auditor: '李强', attachCount: 1 });
+  st.bankStatements['100201'][0].summary = '用户改过的摘要';
+  S.save();
+  var loaded = S.load();
+  t(loaded.vouchers.some(function (v) { return v.id === '记-2026-11-9901' && v.status === '已过账'; }),
+    'load() 不动已有数据：用户已过账凭证原样保留');
+  tEq(loaded.bankStatements['100201'][0].summary, '用户改过的摘要', 'load() 不重置已存在的 bankStatements（用户改不被覆盖）');
+  S.seed(); /* 恢复干净种子，供后续/终态使用 */
+})();
+
 /* ---------- 汇总 ---------- */
 console.log('');
 console.log('通过 ' + passed + ' 项，失败 ' + failed + ' 项（共 ' + (passed + failed) + ' 项断言）');
