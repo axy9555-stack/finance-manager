@@ -1568,6 +1568,26 @@ smoke(function () {
   if (el.innerHTML.indexOf('已缴纳') < 0 || el.innerHTML.indexOf('小微') < 0) throw new Error('申报状态/小微标识未显示');
 }, 'renderTax（申报后）');
 
+/* ---------- 23. chunk 6 修正：利润口径含 4101 制造费用（生产部门期间费用） ---------- */
+section('chunk 6 · 利润口径（含 4101）');
+S.seed();
+(function () {
+  tEq(FMTax.calcCIT(LP).profit, 120000000, 'fresh seed 利润总额 1,200,000.00 不变（种子不碰 4101）');
+  tEq(FMTax.calcCIT(LP).tax, 6000000, 'fresh seed 小微 5% 税 60,000.00 不变');
+  var d = FMAssets.runDepreciation(LP); // 4101 14,250 + 520106 7,000 + 530106 35,250
+  tEq(d && d.ok, true, '计提折旧成功');
+  var ac = FMPayroll.accrue(LP);        // 4101 27,560（工资 20,000 + 单位社保 5,160 + 公积金 2,400）
+  tEq(ac.ok, true, '计提工资成功');
+  var py = FMPayroll.pay(LP);
+  tEq(py.ok, true, '发放工资成功');
+  /* 独立轧差：收入 1,200,000 − 折旧 56,500 − 工资及单位社保公积金 394,108 = 749,392 */
+  var c = FMTax.calcCIT(LP);
+  tEq(c.profit, 74939200, '利润总额 749,392.00（4101 的 41,810 费用进利润，不再虚增）');
+  tEq(c.taxable, 74939200, '应纳税所得额 749,392.00');
+  tEq(c.isSmall, true, '小微标识');
+  tEq(c.tax, 3746960, '小微 5% 税 37,469.60（749,392×5%）');
+})();
+
 /* ---------- 汇总 ---------- */
 console.log('');
 console.log('通过 ' + passed + ' 项，失败 ' + failed + ' 项（共 ' + (passed + failed) + ' 项断言）');
