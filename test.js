@@ -909,6 +909,38 @@ var seedVCount = S.get('vouchers').length, seedECount = S.get('entries').length;
   S.seed(); /* 恢复干净种子，供后续/终态使用 */
 })();
 
+/* 场景 (b)：旧版迁移把缺键写成了空数组/空对象并已存盘，load() 同样要恢复 */
+(function () {
+  var st = S.get();
+  st.bankStatements = [];
+  st.customers = [];
+  st.suppliers = [];
+  S.save();
+  var loaded = S.load();
+  t(loaded.bankStatements && !Array.isArray(loaded.bankStatements) && loaded.bankStatements['100201'],
+    '(b) 空数组 bankStatements 恢复为种子对象');
+  tEq(loaded.bankStatements['100201'].length, 12, '(b) 补回种子流水 12 行');
+  tEq(JSON.stringify(loaded.bankStatements), seedStmtsJson, '(b) 补回内容与种子完全一致（深拷贝）');
+  tEq(loaded.customers.length, seedCustCount, '(b) 补回客户档案（' + seedCustCount + ' 家）');
+  tEq(loaded.suppliers.length, seedSupCount, '(b) 补回供应商档案（' + seedSupCount + ' 家）');
+  tEq(loaded.vouchers.length, seedVCount, '(b) 凭证一条不少');
+  tEq(loaded.entries.length, seedECount, '(b) 分录一行不少');
+  t(loaded.vouchers.filter(function (v) { return v.status === '已过账'; }).length === 6,
+    '(b) 已过账状态原样保留');
+  var recB = FMCashier.reconcile('100201', LP, loaded.bankStatements['100201']);
+  tEq(recB.matched.length, 4, '(b) 修复后种子对账勾对 4 笔');
+  smoke(function () {
+    var el = { innerHTML: '', onclick: null };
+    FMCashier.renderCashier(el);
+    if (el.innerHTML.indexOf('种子流水 12 行') < 0) throw new Error('(b) 页面未显示“种子流水 12 行”');
+  }, '(b) renderCashier 显示种子流水 12 行');
+  /* 空数组但不能误伤真正空种子的键：taxRecords 种子默认就是 []，存 [] 后不应被填入奇怪内容 */
+  st.taxRecords = [];
+  S.save();
+  tEq(S.load().taxRecords.length, 0, '种子默认为空的键存 [] 后保持 []（不误判）');
+  S.seed(); /* 恢复干净种子 */
+})();
+
 /* ---------- 汇总 ---------- */
 console.log('');
 console.log('通过 ' + passed + ' 项，失败 ' + failed + ' 项（共 ' + (passed + failed) + ' 项断言）');

@@ -305,11 +305,26 @@
     }
     if (!parsed || typeof parsed !== 'object' || !parsed.company || !Array.isArray(parsed.accounts)) return seed();
     state = parsed;
-    var missing = TOP_KEYS.filter(function (k) { return state[k] === undefined; });
+    /* 旧版迁移兼容：键缺失（undefined），或者值是空数组/空对象且新鲜种子里该键默认值非空
+     * （旧版 load() 曾把缺键一律填 []，随保存写进了 localStorage），都从种子深拷贝补齐。
+     * 种子默认值本身就空的键（taxRecords 等）不补；已有非空数据一字不动。 */
+    var tpl = null;
+    function seedDefaultNonEmpty(k) {
+      tpl = tpl || buildSeed();
+      var d = tpl[k];
+      if (Array.isArray(d)) return d.length > 0;
+      if (d && typeof d === 'object') return Object.keys(d).length > 0;
+      return false;
+    }
+    var missing = TOP_KEYS.filter(function (k) {
+      var v = state[k];
+      if (v === undefined) return true;
+      if (Array.isArray(v) && v.length === 0) return seedDefaultNonEmpty(k);
+      if (v && typeof v === 'object' && !Array.isArray(v) && Object.keys(v).length === 0) return seedDefaultNonEmpty(k);
+      return false;
+    });
     if (missing.length) {
-      /* 旧版本数据缺新键：从新鲜种子取该键默认值深拷贝补齐（bankStatements 等对象键不再被误填 []）。
-       * 已有键一字不动，用户录入的数据不能丢。 */
-      var tpl = buildSeed();
+      tpl = tpl || buildSeed();
       missing.forEach(function (k) {
         state[k] = JSON.parse(JSON.stringify(tpl[k] === undefined ? [] : tpl[k]));
       });
