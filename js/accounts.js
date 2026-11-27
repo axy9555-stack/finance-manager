@@ -153,6 +153,7 @@
 
   // 发生额汇总（含下级科目）。opts: {postedOnly, cumulative, aux:{customer:'C001'}}
   // 默认只算 period 当期；cumulative=true 时算到 period 为止的累计。返回 {debit, credit}（分）
+  // 口径：默认只算已过账凭证（账簿/余额口径）；opts.postedOnly === false 时才算全部状态。
   function activity(code, period, opts) {
     opts = opts || {};
     period = period || currentPeriod();
@@ -167,7 +168,7 @@
       var v = vmap[e.voucherId];
       if (!v) return;
       if (opts.cumulative ? v.period > period : v.period !== period) return;
-      if (opts.postedOnly && v.status !== '已过账') return;
+      if (opts.postedOnly !== false && v.status !== '已过账') return;
       if (!auxMatch(e.aux, opts.aux)) return;
       debit += e.debit || 0;
       credit += e.credit || 0;
@@ -191,8 +192,8 @@
   }
 
   // 科目余额（分），按科目自身方向折算：借方科目 = 借 − 贷，贷方科目 = 贷 − 借。
-  // 默认 = 期初 + 截至 period 的全部凭证（含未过账）；period 缺省为当前期间。
-  // opts: {postedOnly: 只算已过账, periodOnly: 只算 period 当期发生净额（不含期初）, aux: 按辅助项筛选}
+  // 默认 = 期初 + 截至 period 的已过账凭证（账簿口径：未过账不算余额）；period 缺省为当前期间。
+  // opts: {postedOnly: false 时算全部状态凭证, periodOnly: 只算 period 当期发生净额（不含期初）, aux: 按辅助项筛选}
   function balance(code, period, opts) {
     opts = opts || {};
     var a = get(code);

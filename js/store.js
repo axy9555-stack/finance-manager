@@ -8,7 +8,7 @@
   'use strict';
 
   var KEY = 'finance-manager-v1';
-  var TOP_KEYS = ['company', 'periods', 'accounts', 'vouchers', 'entries', 'departments', 'staff',
+  var TOP_KEYS = ['company', 'periods', 'closedPeriods', 'accounts', 'vouchers', 'entries', 'departments', 'staff',
     'customers', 'suppliers', 'taxRecords', 'assets', 'payrolls', 'invoices', 'budgets', 'auditLog'];
   var state = null;
   var memory = null; // 内存兜底
@@ -239,6 +239,7 @@
         current: '2026-11',
         list: [{ period: '2026-10', closed: true }, { period: '2026-11', closed: false }]
       },
+      closedPeriods: [], // chunk 2：经 FMClosing 结账的期间列表（期初锁定、凭证锁定用）
       accounts: seedAccounts(),
       vouchers: v.vouchers,
       entries: v.entries,

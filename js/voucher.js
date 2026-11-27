@@ -25,6 +25,11 @@
     return !!(hit && hit.closed);
   }
 
+  // chunk 2：经 FMClosing 结账的期间（state.closedPeriods）凭证全部锁定
+  function closedLock(period) {
+    return ((S().get('closedPeriods') || []).indexOf(period) >= 0);
+  }
+
   function vouchers() { return S().get('vouchers') || []; }
   function entries() { return S().get('entries') || []; }
 
@@ -71,6 +76,7 @@
       return fail('凭证日期不能为空，格式应为 2026-11-01');
     if (String(data.date).slice(0, 7) !== period)
       return fail('凭证日期 ' + data.date + ' 不在当前会计期间（' + period + '）内');
+    if (closedLock(period)) return fail('会计期间 ' + period + ' 已结账，不能新增凭证');
     if (!data.summary || !String(data.summary).trim()) return fail('凭证摘要不能为空');
 
     var rows = [];
@@ -144,6 +150,7 @@
     if (v.status === '未审核') return fail('未审核凭证不能过账，请先审核');
     if (v.status === '已过账') return fail('凭证已过账，不能重复过账');
     if (periodClosed(v.period)) return fail('会计期间 ' + v.period + ' 已结账，不能过账');
+    if (closedLock(v.period)) return fail('会计期间 ' + v.period + ' 已结账，不能过账');
     v.status = '已过账';
     S().save();
     S().log('凭证过账', id, '');
@@ -156,6 +163,7 @@
     if (v.status !== '已过账') return fail('只有已过账凭证可以反过账（当前状态：' + v.status + '）');
     if (v.period !== currentPeriod()) return fail('只能反过账当月（' + currentPeriod() + '）凭证');
     if (periodClosed(v.period)) return fail('会计期间已结账，不能反过账');
+    if (closedLock(v.period)) return fail('会计期间 ' + v.period + ' 已结账，不能反过账');
     v.status = '已审核';
     S().save();
     S().log('凭证反过账', id, '');
@@ -169,6 +177,7 @@
     if (v.status !== '已过账') return fail('只有已过账凭证可以红字冲销（当前状态：' + v.status + '）');
     if (v.period !== currentPeriod()) return fail('只能红字冲销当月（' + currentPeriod() + '）凭证');
     if (periodClosed(v.period)) return fail('会计期间已结账，不能红字冲销');
+    if (closedLock(v.period)) return fail('会计期间 ' + v.period + ' 已结账，不能红字冲销');
     var rows = entriesOf(id).map(function (e) {
       /* 金额转为元字符串，避免 create 里 cleanCents 把分再当成元乘 100 */
       return {
@@ -213,18 +222,24 @@
     return out;
   }
 
-  // 试算平衡：某期间全部分录的借方合计 / 贷方合计 / 差额
+  // 试算平衡：某期间已过账（已记账）凭证分录的借方合计 / 贷方合计 / 差额。
+  // 口径：只有已过账凭证进账簿与试算；voucherCount 是本期凭证总数，postedCount 是已过账张数。
   function trialBalance(period) {
     period = period || currentPeriod();
-    var debit = 0, credit = 0, count = 0;
-    vouchers().forEach(function (v) { if (v.period === period) count++; });
+    var debit = 0, credit = 0, count = 0, postedCount = 0;
+    vouchers().forEach(function (v) {
+      if (v.period === period) { count++; if (v.status === '已过账') postedCount++; }
+    });
     entries().forEach(function (e) {
       var v = getV(e.voucherId);
-      if (!v || v.period !== period) return;
+      if (!v || v.period !== period || v.status !== '已过账') return;
       debit += e.debit || 0;
       credit += e.credit || 0;
     });
-    return { period: period, voucherCount: count, debit: debit, credit: credit, diff: debit - credit, balanced: debit === credit };
+    return {
+      period: period, voucherCount: count, postedCount: postedCount,
+      debit: debit, credit: credit, diff: debit - credit, balanced: debit === credit
+    };
   }
 
   /* ---------- 渲染：凭证列表 ---------- */

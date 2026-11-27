@@ -16,7 +16,8 @@ global.FMToast = function () {};
 
 var fs = require('fs');
 var path = require('path');
-['js/taxrules.js', 'js/store.js', 'js/accounts.js', 'js/voucher.js', 'js/dashboard.js'].forEach(function (f) {
+['js/taxrules.js', 'js/store.js', 'js/accounts.js', 'js/voucher.js', 'js/dashboard.js',
+ 'js/ledger.js', 'js/closing.js', 'js/opening.js'].forEach(function (f) {
   /* 在全局作用域执行，等价于浏览器的 <script src> */
   var code = fs.readFileSync(path.join(__dirname, f), 'utf8');
   require('vm').runInThisContext(code, { filename: f });
@@ -98,9 +99,12 @@ tEq(ot.debit, 2032735050, '期初借方合计 = 20,327,350.50（2032735050 分�
 tEq(ot.credit, 2032735050, '期初贷方合计 = 20,327,350.50（2032735050 分）');
 tEq(ot.diff, 0, '期初借贷差额为 0');
 var tb0 = V.trialBalance(PERIOD);
-tEq(tb0.balanced, true, '当前期间全部凭证试算平衡');
+tEq(tb0.balanced, true, '当前期间已过账凭证试算平衡');
 tEq(tb0.diff, 0, '当前期间借贷差额为 0');
 tEq(tb0.debit, tb0.credit, '当前期间借方合计 = 贷方合计');
+tEq(tb0.debit, 460853000, '新鲜种子已过账借方合计 4,608,530.00（只计 0001–0006）');
+tEq(tb0.postedCount, 6, '已过账凭证 6 张');
+tEq(tb0.voucherCount, 12, '本期凭证总数仍为 12 张');
 t(tb0.debit > 0, '当前期间有发生额（借方合计 ' + S.fmt(tb0.debit) + ' 元）');
 tEq(S.get('vouchers').length, 12, '种子凭证 12 张');
 tEq(S.get('entries').length, 46, '种子分录 46 行');
@@ -117,7 +121,7 @@ tEq(S.get('entries').length, 46, '种子分录 46 行');
 /* ---------- 3. 余额计算一致性 ---------- */
 section('余额计算');
 (function () {
-  /* 用独立实现核对 balance()：期初 + 全部（cumulative）期间内分录，按科目方向折算 */
+  /* 用独立实现核对 balance()：期初 + 已过账凭证（账簿口径，未过账不算余额） */
   ['1002', '1122', '2202', '1405', '222102', '600101'].forEach(function (code) {
     var acc = A.get(code);
     var opening = 0;
@@ -129,7 +133,7 @@ section('余额计算');
     S.get('entries').forEach(function (e) {
       if (String(e.accountCode).indexOf(code) !== 0) return;
       var v = S.get('vouchers').filter(function (x) { return x.id === e.voucherId; })[0];
-      if (!v || v.period > PERIOD) return;
+      if (!v || v.period > PERIOD || v.status !== '已过账') return;
       act.debit += e.debit || 0;
       act.credit += e.credit || 0;
     });
@@ -137,12 +141,12 @@ section('余额计算');
     var expected = acc.direction === '借' ? net : -net;
     tEq(A.balance(code, PERIOD), expected, 'balance(' + code + ') 与独立核算一致');
   });
-  tEq(A.balance('1002', PERIOD), 562597050, '银行存款余额 = 5,625,970.50');
+  tEq(A.balance('1002', PERIOD), 519737050, '银行存款余额（已过账口径）= 5,197,370.50');
   t(A.balance('1122', PERIOD) > 0, '应收账款余额为正');
   t(A.balance('2202', PERIOD) > 0, '应付账款余额为正');
   tEq(A.balance('9999', PERIOD), 0, '不存在科目余额为 0');
-  tEq(A.balance('1002', PERIOD, { postedOnly: true }) !== A.balance('1002', PERIOD), true,
-    'postedOnly 过滤未过账凭证（有未审核种子凭证）');
+  tEq(A.balance('1002', PERIOD, { postedOnly: false }) !== A.balance('1002', PERIOD), true,
+    'postedOnly:false 计入未过账凭证（与默认已过账口径不等，差 0007–0012 的发生额）');
 })();
 
 /* ---------- 4. 凭证创建校验（全部拒绝路径，中文报错） ---------- */
@@ -410,6 +414,254 @@ smoke(function () {
   V.renderVoucherForm(el, '记-2026-11-0001'); /* 查看已有凭证 */
   if (el.innerHTML.indexOf('采购商品一批入库') < 0) throw new Error('凭证详情缺失');
 }, 'renderVoucherForm（查看）');
+
+/* ---------- 13. chunk 2：总账 / 余额表 / 明细账 ---------- */
+S.seed();
+var LP = S.get('periods').current;
+section('chunk 2 · 总账 / 余额表 / 明细账');
+(function () {
+  /* 独立复算核对 accountBalance */
+  ['1002', '1122', '2202', '600101', '1405', '3103'].forEach(function (code) {
+    var acc = A.get(code);
+    var sign = acc.direction === '借' ? 1 : -1;
+    var open = 0;
+    A.all().forEach(function (a) {
+      if (String(a.code).indexOf(code) !== 0) return;
+      open += a.direction === '借' ? (a.opening || 0) : -(a.opening || 0);
+    });
+    var d = 0, c = 0;
+    S.get('entries').forEach(function (e) {
+      if (String(e.accountCode).indexOf(code) !== 0) return;
+      var v = S.get('vouchers').filter(function (x) { return x.id === e.voucherId; })[0];
+      if (!v || v.period !== LP || v.status !== '已过账') return;
+      d += e.debit || 0;
+      c += e.credit || 0;
+    });
+    var got = FMLedger.accountBalance(code, LP);
+    tEq(got.opening, open * sign, 'accountBalance(' + code + ').opening 独立复算一致');
+    tEq(got.debit, d, 'accountBalance(' + code + ').debit 只含已过账');
+    tEq(got.credit, c, 'accountBalance(' + code + ').credit 只含已过账');
+    tEq(got.closing, (open + d - c) * sign, 'accountBalance(' + code + ').closing 独立复算一致');
+  });
+})();
+tEq(FMLedger.accountBalance('9999', LP), null, 'accountBalance 不存在科目返回 null');
+tEq(FMLedger.accountBalance('100201', LP).opening, 486230050, '工行基本户期初 4,862,300.50');
+t(FMLedger.accountBalance('2202', LP).opening > 0, '贷方向科目期初按贷正折算');
+t(FMLedger.accountBalance('1002', LP).debit > 0 || FMLedger.accountBalance('1002', LP).credit > 0, '银行存款有已过账发生额');
+
+var gl = FMLedger.generalLedger(LP);
+tEq(gl.rows.length, A.leaves().length, '总账行数 = 末级科目数（' + A.leaves().length + '）');
+t(gl.rows.every(function (r) {
+  return r.direction === '借' ? r.closing === r.opening + r.debit - r.credit
+    : r.closing === r.opening - r.debit + r.credit;
+}), '总账每行 期末 = 期初 ± 本期借贷发生（按方向折算）');
+var glA = FMLedger.generalLedger(LP, '资产');
+t(glA.rows.length > 0 && glA.rows.every(function (r) { return r.category === '资产'; }), '总账按大类筛选（资产）');
+
+var bs = FMLedger.balanceSheet(LP);
+tEq(bs.balanced, true, '科目余额表平衡');
+tEq(bs.closing.debit, bs.closing.credit, '余额表借方合计 = 贷方合计（' + S.fmt(bs.closing.debit) + ' 元）');
+tEq(bs.diff, 0, '余额表差额为 0');
+tEq(bs.reason, '', '平衡时无报错原因');
+tEq(bs.opening.debit, 2032735050, '余额表期初借方合计 20,327,350.50');
+tEq(bs.opening.credit, 2032735050, '余额表期初贷方合计 20,327,350.50');
+
+var dl = FMLedger.detailLedger('100201', LP);
+t(dl.rows.length > 0, '明细账有已过账分录行（' + dl.rows.length + ' 行）');
+(function () {
+  /* 独立复算滚动余额 */
+  var manual = [];
+  S.get('entries').forEach(function (e) {
+    if (String(e.accountCode).indexOf('100201') !== 0) return;
+    var v = S.get('vouchers').filter(function (x) { return x.id === e.voucherId; })[0];
+    if (!v || v.period !== LP || v.status !== '已过账') return;
+    manual.push({ date: v.date, vid: v.id, line: e.line || 0, d: e.debit || 0, c: e.credit || 0 });
+  });
+  manual.sort(function (x, y) {
+    if (x.date !== y.date) return x.date < y.date ? -1 : 1;
+    if (x.vid !== y.vid) return x.vid < y.vid ? -1 : 1;
+    return x.line - y.line;
+  });
+  var raw = 486230050, expected = [];
+  manual.forEach(function (m) { raw += m.d - m.c; expected.push(raw); });
+  tEq(dl.rows.map(function (r) { return r.balance; }).join(','), expected.join(','), '明细账余额逐行滚动与独立复算一致');
+  tEq(dl.rows[0].balance, 486230050 + manual[0].d - manual[0].c, '明细账首行余额 = 期初 + 首行净额');
+  tEq(dl.closing, FMLedger.accountBalance('100201', LP).closing, '明细账期末 = 余额表期末');
+  var dates = dl.rows.map(function (r) { return r.date; });
+  t(dates.every(function (d, i) { return i === 0 || dates[i - 1] <= d; }), '明细账按日期升序');
+})();
+tEq(dl.rows.every(function (r) { return !!r.voucherId; }), true, '明细账行都带凭证号');
+tEq(FMLedger.detailLedger('9999', LP), null, '明细账不存在科目返回 null');
+
+var tb2 = FMLedger.trialBalance(LP), base = V.trialBalance(LP);
+tEq(tb2.balanced, true, 'chunk 2 试算平衡表平衡');
+tEq(tb2.debit, base.debit, '试算平衡复用 voucher.js 借方合计');
+tEq(tb2.credit, base.credit, '试算平衡复用 voucher.js 贷方合计');
+tEq(tb2.byCategory.reduce(function (s, c) { return s + c.debit; }, 0), tb2.debit, '大类借方合计之和 = 总借方');
+tEq(tb2.byCategory.reduce(function (s, c) { return s + c.credit; }, 0), tb2.credit, '大类贷方合计之和 = 总贷方');
+tEq(tb2.byCategory.length, A.CATEGORIES.length, '按 6 大类分组');
+
+var csv = FMLedger.exportCSV([['科目编码', '名称', '方向', '期初余额'], ['1001', '库存现金', '借', '38,650.00'], ['a"b', 'x,y']]);
+tEq(csv.charCodeAt(0), 0xFEFF, 'CSV 带 UTF-8 BOM');
+t(csv.slice(1).indexOf('科目编码,名称,方向,期初余额\r\n') === 0, 'CSV 表头与 CRLF');
+t(csv.indexOf('1001,库存现金,借,"38,650.00"') > 0, 'CSV 含逗号字段自动加引号');
+t(csv.indexOf('"a""b","x,y"') > 0, 'CSV 引号与逗号转义');
+tEq(csv.slice(-2), '\r\n', 'CSV 以换行结束');
+t(typeof FMLedger.exportCSV([]) === 'string', 'Node 环境导出返回字符串');
+
+/* ---------- 14. chunk 2：期初余额 ---------- */
+section('chunk 2 · 期初余额');
+tEq(FMOpening.get('1001'), 3865000, 'get 期初余额（38,650.00 元）');
+tEq(FMOpening.get('9999'), null, 'get 不存在科目返回 null');
+tEq(FMOpening.validate().ok, true, '种子期初试算平衡通过');
+r = FMOpening.set('9999', 100, '借');
+t(!r.ok && /不存在/.test(r.reason), 'set 科目不存在拒绝');
+r = FMOpening.set('1002', 100, '借');
+t(!r.ok && /不是末级/.test(r.reason), 'set 非末级科目拒绝');
+r = FMOpening.set('1001', -1, '借');
+t(!r.ok && /不能为负/.test(r.reason), 'set 负数金额拒绝');
+r = FMOpening.set('1001', 100.5, '借');
+t(!r.ok && /整数分/.test(r.reason), 'set 非整数分拒绝');
+r = FMOpening.set('1001', 100, '贷');
+t(!r.ok && /方向/.test(r.reason), 'set 方向与科目方向不一致拒绝');
+tEq(FMOpening.set('1001', 3865000, '借').ok, true, 'set 同值写入成功');
+tEq(FMOpening.set('1001', 3875000, '借').ok, true, 'set 修改借方期初（+100 元）');
+tEq(FMOpening.set('2202', 284570000, '贷').ok, true, 'set 修改贷方期初（+100 元）');
+tEq(FMOpening.validate().ok, true, '成对修改后期初仍平衡');
+var adj = FMOpening.adjust([
+  { code: '1001', amount: 3895000, direction: '借' },
+  { code: '2202', amount: 284590000, direction: '贷' }
+]);
+tEq(adj.ok, true, 'adjust 平衡批量调整成功');
+tEq(FMOpening.get('1001'), 3895000, 'adjust 写入借方期初');
+tEq(FMOpening.get('2202'), 284590000, 'adjust 写入贷方期初');
+tEq(FMOpening.validate().ok, true, 'adjust 后期初仍平衡');
+var adj2 = FMOpening.adjust([
+  { code: '1001', amount: 3905000, direction: '借' },
+  { code: '1001', amount: -5, direction: '借' }
+]);
+t(!adj2.ok && /不能为负/.test(adj2.reason), 'adjust 任一行失败返回第一个失败原因');
+tEq(FMOpening.get('1001'), 3895000, 'adjust 行级失败全部回滚（借方未变）');
+var adj3 = FMOpening.adjust([
+  { code: '1001', amount: 3915000, direction: '借' },
+  { code: '2202', amount: 284600000, direction: '贷' }
+]);
+t(!adj3.ok && /不平衡/.test(adj3.reason) && /差额/.test(adj3.reason), '期初不平拒绝保存并报差额');
+tEq(FMOpening.get('1001'), 3895000, '不平批量回滚（借方未变）');
+tEq(FMOpening.get('2202'), 284590000, '不平批量回滚（贷方未变）');
+tEq(FMOpening.validate().ok, true, '回滚后期初仍平衡');
+r = FMOpening.adjust([{ code: '1001', amount: 1 }]);
+t(!r.ok && /方向/.test(r.reason), 'adjust 缺方向拒绝');
+
+/* ---------- 15. chunk 2：结账流程（结转损益 → 月结 → 反结账） ---------- */
+section('chunk 2 · 结账 / 结转损益 / 反结账');
+var cl = FMClosing.closeChecklist(LP);
+tEq(cl.length, 4, '检查清单 4 项');
+tEq(cl[0].ok, true, '① 本期试算平衡通过');
+tEq(cl[1].ok, false, '② 存在未过账凭证被拦');
+tEq(cl[3].ok, false, '④ 损益未结转被标记');
+r = FMClosing.close(LP);
+t(!r.ok && /检查未通过/.test(r.reason) && /已过账/.test(r.reason), '结账被检查清单拦截（未过账凭证）');
+tEq(FMClosing.isClosed(LP), false, '拦截后期间未结账');
+
+S.get('vouchers').forEach(function (v) { if (v.status === '未审核') V.audit(v.id, '李强'); });
+t(S.get('vouchers').every(function (v) { return v.status !== '未审核'; }), '未审核凭证已全部审核');
+var postFails = [];
+S.get('vouchers').forEach(function (v) {
+  if (v.status !== '已过账') { var p = V.post(v.id); if (!p.ok) postFails.push(p.reason); }
+});
+tEq(postFails.length, 0, '全部凭证过账成功');
+tEq(S.get('vouchers').filter(function (v) { return v.status === '已过账'; }).length, 12, '12 张凭证全部已过账');
+
+tEq(FMClosing.carryForward('2026-12').ok, false, '非当前期间不能结转损益');
+var cf = FMClosing.carryForward(LP);
+tEq(cf.ok, true, '结转损益成功');
+tEq(cf.income, 165000000, '结转收入 1,650,000.00');
+tEq(cf.expense, 222290040, '结转成本费用 2,222,900.40');
+tEq(cf.amount, -57290040, '净亏损 −572,900.40 结转本年利润');
+var carryV = S.get('vouchers').filter(function (v) { return v.id === cf.id; })[0];
+tEq(carryV.status, '已过账', '结转凭证已审核并过账');
+tEq(carryV.maker, '系统结转', '结转凭证制单人为系统结转');
+t(/结转本期损益（2026-11）/.test(carryV.summary), '结转凭证摘要注明期间');
+tEq(V.entriesOf(cf.id).reduce(function (s, e) { return s + e.debit; }, 0), 222290040, '结转凭证借方合计 = 成本费用合计（借贷平衡）');
+var plZero = A.leaves().filter(function (a) { return a.category === '损益'; })
+  .every(function (a) { return FMLedger.accountBalance(a.code, LP).closing === 0; });
+tEq(plZero, true, '结转后损益类末级科目余额全部归零');
+(function () {
+  var b3103 = FMLedger.accountBalance('3103', LP);
+  tEq(b3103.closing - b3103.opening, -57290040, '本年利润承接结转净额 −572,900.40（原期初贷余额 685,200 承接后变借余额）');
+  tEq(b3103.closing, 11229960, '本年利润期末贷向折算余额 112,299.60（期初 685,200 − 亏损 572,900.40）');
+})();
+var cf2 = FMClosing.carryForward(LP);
+t(!cf2.ok && cf2.reason === '本期损益已结转', '重复结转返回“本期损益已结转”');
+
+tEq(FMClosing.closeChecklist(LP).every(function (i) { return i.ok; }), true, '全部过账并结转后检查清单全通过');
+tEq(FMClosing.canClose(LP).ok, true, 'canClose 允许结账');
+t(!FMClosing.canClose('2026-13').ok, 'canClose 非法期间拒绝');
+var rclose = FMClosing.close(LP);
+tEq(rclose.ok, true, '月结成功');
+tEq(FMClosing.isClosed(LP), true, '期间已结账锁定');
+t((S.get('closedPeriods') || []).indexOf(LP) >= 0, 'closedPeriods 已记录该期间');
+r = FMClosing.close(LP);
+t(!r.ok && /重复结账/.test(r.reason), '重复结账被拒绝');
+
+/* 锁定后的凭证与期初操作 */
+r = V.create({ date: '2026-11-28', summary: '结账后新增', maker: '王丽',
+  entries: [E('1001', '', '1.00', 0), E('100201', 0, '', '1.00')] });
+t(!r.ok && /已结账，不能新增凭证/.test(r.reason), '已结账期间不能新增凭证');
+var somePosted = S.get('vouchers').filter(function (v) { return v.status === '已过账' && v.period === LP; })[0];
+r = V.unpost(somePosted.id);
+t(!r.ok && /已结账，不能反过账/.test(r.reason), '已结账期间不能反过账');
+r = V.reverse(somePosted.id);
+t(!r.ok && /已结账，不能红字冲销/.test(r.reason), '已结账期间不能红字冲销');
+r = FMOpening.set('1001', 100, '借');
+t(!r.ok && /结账/.test(r.reason), '已结账后期初 set 被拒绝');
+r = FMOpening.adjust([{ code: '1001', amount: 1, direction: '借' }]);
+t(!r.ok && /结账/.test(r.reason), '已结账后期初 adjust 被拒绝');
+
+/* 反结账 */
+var cpSim = (S.get('closedPeriods') || []).slice();
+cpSim.push('2026-10');
+S.set('closedPeriods', cpSim);
+r = FMClosing.unclose('2026-10', '测试');
+t(!r.ok && /只能反结最近/.test(r.reason), '只能反结最近一个已结账期间');
+S.set('closedPeriods', (S.get('closedPeriods') || []).filter(function (p) { return p !== '2026-10'; }));
+r = FMClosing.unclose('2026-99', '测试');
+t(!r.ok && /未结账/.test(r.reason), '未结账期间不能反结');
+tEq(FMClosing.unclose(LP, '').ok, false, '反结账原因必填');
+tEq(FMClosing.unclose(LP, '   ').ok, false, '空白原因无效');
+var ru = FMClosing.unclose(LP, '测试：发现漏记凭证需要补充');
+tEq(ru.ok, true, '反结最近一个已结账期间成功');
+tEq(FMClosing.isClosed(LP), false, '反结账后期间解锁');
+t((S.get('auditLog') || []).some(function (l) {
+  return l.action === '反结账' && l.target === LP && /原因：/.test(l.detail);
+}), '反结账写入审计日志（操作人/时间/原因）');
+r = V.create({ date: '2026-11-28', summary: '反结账后新增', maker: '王丽',
+  entries: [E('1001', '', '2.00', 0), E('100201', 0, '', '2.00')] });
+tEq(r.ok, true, '反结账后可再新增凭证');
+tEq(FMOpening.set('1001', 3895000, '借').ok, true, '反结账后期初解锁可修改');
+
+/* chunk 2 渲染冒烟 */
+smoke(function () {
+  var el = { innerHTML: '', onclick: null };
+  FMLedger.renderLedger(el);
+  if (el.innerHTML.indexOf('总账 / 余额表') < 0 || el.innerHTML.indexOf('期末借方') < 0) throw new Error('总账页内容缺失');
+}, 'renderLedger');
+smoke(function () {
+  var el = { innerHTML: '', onclick: null };
+  FMLedger.renderTrialBalance(el);
+  if (el.innerHTML.indexOf('试算平衡表') < 0) throw new Error('试算平衡表内容缺失');
+}, 'renderTrialBalance');
+smoke(function () {
+  var el = { innerHTML: '', onclick: null };
+  FMClosing.renderClosing(el);
+  if (el.innerHTML.indexOf('结账前检查清单') < 0) throw new Error('结账页内容缺失');
+}, 'renderClosing');
+smoke(function () {
+  var el = { innerHTML: '', onclick: null, oninput: null };
+  FMOpening.renderOpening(el);
+  if (el.innerHTML.indexOf('期初余额') < 0 || el.innerHTML.indexOf('借方合计') < 0) throw new Error('期初页内容缺失');
+}, 'renderOpening');
 
 /* ---------- 汇总 ---------- */
 console.log('');
