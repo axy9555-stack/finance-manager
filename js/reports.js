@@ -450,7 +450,7 @@
   var R = { tab: 'bs', period: '' };
 
   function numCell(v) {
-    return '<td class="num">' + ((v || 0) === 0 ? '' : S().fmt(v)) + '</td>';
+    return '<td class="num">' + S().fmt(v || 0) + '</td>';
   }
 
   function renderReports(el) {
