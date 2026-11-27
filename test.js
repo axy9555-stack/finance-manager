@@ -17,7 +17,7 @@ global.FMToast = function () {};
 var fs = require('fs');
 var path = require('path');
 ['js/taxrules.js', 'js/store.js', 'js/accounts.js', 'js/voucher.js', 'js/dashboard.js',
- 'js/ledger.js', 'js/closing.js', 'js/opening.js'].forEach(function (f) {
+ 'js/ledger.js', 'js/closing.js', 'js/opening.js', 'js/arap.js', 'js/cashier.js'].forEach(function (f) {
   /* 在全局作用域执行，等价于浏览器的 <script src> */
   var code = fs.readFileSync(path.join(__dirname, f), 'utf8');
   require('vm').runInThisContext(code, { filename: f });
@@ -662,6 +662,199 @@ smoke(function () {
   FMOpening.renderOpening(el);
   if (el.innerHTML.indexOf('期初余额') < 0 || el.innerHTML.indexOf('借方合计') < 0) throw new Error('期初页内容缺失');
 }, 'renderOpening');
+
+/* ---------- 16. chunk 3：应收应付 ---------- */
+S.seed();
+var LP = S.get('periods').current;
+section('chunk 3 · 应收应付 / 往来账');
+(function () {
+  var cust = FMARAP.customers(), sup = FMARAP.suppliers();
+  t(cust.length >= 5, '客户档案 ≥ 5 个（实际 ' + cust.length + '）');
+  t(sup.length >= 5, '供应商档案 ≥ 5 个（实际 ' + sup.length + '）');
+  var c1 = cust.filter(function (p) { return p.id === 'C001'; })[0];
+  tEq(c1 && c1.name, '南京瑞丰科技有限公司', 'C001 = 南京瑞丰科技');
+  var s1 = sup.filter(function (p) { return p.id === 'S001'; })[0];
+  tEq(s1 && s1.name, '华东电子有限公司', 'S001 = 华东电子');
+  var c3 = cust.filter(function (p) { return p.id === 'C003'; })[0];
+  tEq(c3 && c3.name, '苏州明达贸易有限公司', 'C003 = 苏州明达贸易');
+  t(cust.every(function (p) { return p.creditLimit > 0 && p.creditDays > 0 && typeof p.contact === 'string' && typeof p.phone === 'string'; }),
+    '客户档案字段齐全（信用额度/账期/联系人/电话）');
+  t(sup.every(function (p) { return p.creditLimit > 0 && p.creditDays > 0; }), '供应商档案字段齐全');
+
+  /* 档案外编码自动补 */
+  var tmpE = { id: '__tmp__-1', voucherId: '__tmp__', line: 1, accountCode: '1122', summary: '临时', debit: 1, credit: 0, aux: { customer: 'C999' } };
+  S.get('entries').push(tmpE);
+  var auto = FMARAP.customers().filter(function (p) { return p.id === 'C999'; })[0];
+  t(!!auto && auto.auto === true && auto.name === 'C999', '档案外的 aux 编码自动补档案（名称取编码）');
+  tEq(FMARAP.customerBalance('C999', LP).closing, 0, '无已过账凭证的往来单位余额为 0');
+  S.get('entries').splice(S.get('entries').indexOf(tmpE), 1);
+  t(!FMARAP.customers().some(function (p) { return p.id === 'C999'; }), '临时分录移除后自动档案消失');
+})();
+
+var cb1 = FMARAP.customerBalance('C001', LP);
+tEq(cb1.opening, 82000000, 'C001 期初应收 820,000.00');
+tEq(cb1.debit, 135600000, 'C001 本期已过账应收发生 1,356,000.00');
+tEq(cb1.credit, 0, 'C001 本期无收款');
+tEq(cb1.closing, 217600000, 'C001 应收余额 2,176,000.00');
+tEq(FMARAP.customerBalance('C002', LP).closing, 50000000, 'C002 应收余额 500,000.00（期初 1,150,000 − 收款 650,000）');
+tEq(FMARAP.customerBalance('C003', LP).closing, 36840000, 'C003 应收余额 368,400.00');
+
+var sb1 = FMARAP.supplierBalance('S001', LP);
+tEq(sb1.opening, 96000000, 'S001 期初应付 960,000.00');
+tEq(sb1.credit, 90400000, 'S001 本期已过账采购发生 904,000.00');
+tEq(sb1.closing, 186400000, 'S001 应付余额 1,864,000.00');
+tEq(FMARAP.supplierBalance('S002', LP).closing, 60560000, 'S002 应付余额 605,600.00（1,085,600 − 付款 480,000）');
+
+(function () {
+  var sumC = FMARAP.customers().reduce(function (s, p) { return s + FMARAP.customerBalance(p.id, LP).closing; }, 0);
+  tEq(sumC, A.balance('1122', LP), '客户应收余额合计 = 1122 科目余额（' + S.fmt(A.balance('1122', LP)) + '）');
+  var sumS = FMARAP.suppliers().reduce(function (s, p) { return s + FMARAP.supplierBalance(p.id, LP).closing; }, 0);
+  tEq(sumS, A.balance('2202', LP), '供应商应付余额合计 = 2202 科目余额（' + S.fmt(A.balance('2202', LP)) + '）');
+})();
+
+/* 账龄（新鲜种子：全部挂账都从期初建账日算，均为 0–30 天） */
+var ag = FMARAP.aging('receivable', LP);
+tEq(ag.buckets.length, 4, '账龄分四档');
+tEq(ag.total, A.balance('1122', LP), '账龄挂账总额 = 应收科目余额');
+tEq(ag.buckets[0].amount, ag.total, '新鲜种子全部挂账在 0–30 天档');
+tEq(ag.buckets[1].amount + ag.buckets[2].amount + ag.buckets[3].amount, 0, '其余三档为 0');
+tEq(Math.round(ag.buckets.reduce(function (s, b) { return s + b.pct; }, 0)), 100, '账龄占比合计 100%');
+
+/* 临时塞一笔 2026-06 的已过账老应收（2026-11 不受影响，仅验账龄分档），验完移除 */
+(function () {
+  var tv = { id: '记-2026-06-9901', date: '2026-06-15', period: '2026-06', summary: '临时老应收（测试）', status: '已过账', maker: '', auditor: '', attachCount: 0 };
+  var te = { id: tv.id + '-1', voucherId: tv.id, line: 1, accountCode: '1122', summary: '老应收', debit: 50000000, credit: 0, aux: { customer: 'C003' } };
+  S.get('vouchers').push(tv);
+  S.get('entries').push(te);
+  var ag2 = FMARAP.aging('receivable', LP);
+  tEq(ag2.total, 447440000, '老应收后挂账总额 4,474,400.00');
+  tEq(ag2.buckets[0].amount, 397440000, '0–30 天档 3,974,400.00');
+  tEq(ag2.buckets[3].amount, 50000000, '90 天以上档 500,000.00（2026-06-15 起 168 天）');
+  tEq(FMARAP.customerBalance('C003', LP).closing, 86840000, 'C003 含老应收余额 868,400.00');
+  S.get('vouchers').splice(S.get('vouchers').indexOf(tv), 1);
+  S.get('entries').splice(S.get('entries').indexOf(te), 1);
+  tEq(FMARAP.customerBalance('C003', LP).closing, 36840000, '临时凭证移除后 C003 余额复原');
+  tEq(FMARAP.aging('receivable', LP).total, 397440000, '账龄总额复原');
+})();
+
+var lp = FMARAP.listPayables(LP);
+tEq(lp.rows.length, 6, '应付明细 6 行（4 期初 + 2 发生）');
+tEq(lp.rows.every(function (r) { return typeof r.ageDays === 'number' && r.ageDays >= 0; }), true, '应付明细每行带账龄天数');
+tEq(lp.rows.filter(function (r) { return r.code === 'S001'; }).map(function (r) { return r.balance; }).join(','), '96000000,186400000', 'S001 余额逐行滚动');
+tEq(lp.rows.filter(function (r) { return r.code === 'S002'; }).map(function (r) { return r.balance; }).join(','), '108560000,60560000', 'S002 余额逐行滚动');
+tEq(lp.rows.every(function (r) { return !r.voucherId || (S.get('vouchers').filter(function (v) { return v.id === r.voucherId; })[0] || { status: '' }).status === '已过账'; }), true, '应付明细只含已过账凭证');
+
+var lr = FMARAP.listReceivables(LP);
+tEq(lr.rows.length, 7, '应收明细 7 行（5 期初 + 2 发生）');
+tEq(lr.rows[0].summary, '期初余额', '明细首行为期初余额行');
+tEq(lr.rows.filter(function (r) { return r.code === 'C001'; }).map(function (r) { return r.balance; }).join(','), '82000000,217600000', 'C001 余额逐行滚动');
+tEq(lr.rows.filter(function (r) { return r.code === 'C002'; }).map(function (r) { return r.balance; }).join(','), '115000000,50000000', 'C002 余额逐行滚动');
+tEq(lr.rows[lr.rows.length - 1].ageDays, 25, '最后一行（11-05 收款）账龄 25 天');
+(function () {
+  var dates = lr.rows.map(function (r) { return r.date; });
+  t(dates.every(function (d, i) { return i === 0 || dates[i - 1] <= d; }), '应收明细按日期排序');
+})();
+tEq(FMARAP.partyLedger('customer', 'C002', LP).closing, 50000000, 'partyLedger 期末与 customerBalance 一致');
+
+/* ---------- 17. chunk 3：出纳 / 银行 ---------- */
+section('chunk 3 · 出纳 / 银行');
+var accs = FMCashier.accounts();
+tEq(accs.length, 3, '账户档案 3 个（现金 + 两个银行户）');
+tEq(accs.map(function (a) { return a.code; }).join(','), '1001,100201,100202', '账户编码正确');
+var acc201 = accs.filter(function (a) { return a.code === '100201'; })[0];
+tEq(acc201.bank, '工商银行', '账户银行字段');
+tEq(acc201.masked, '**** **** 6781', '账号脱敏只显后 4 位');
+
+tEq(FMCashier.balance('100201', LP), 394737050, '工行户余额 3,947,370.50（期初 4,862,300.50 − 净付 914,930.00）');
+tEq(FMCashier.balance('100202', LP), 125000000, '建行户余额 1,250,000.00');
+tEq(FMCashier.balance('1001', LP), 3865000, '库存现金余额 38,650.00');
+tEq(FMCashier.balance('100201', LP), FMLedger.accountBalance('100201', LP).closing, '出纳余额与总账 accountBalance 一致');
+
+var j201 = FMCashier.journal('100201', LP);
+tEq(j201.rows.length, 4, '工行日记账 4 行（只含已过账）');
+tEq(j201.opening, 486230050, '日记账期初 4,862,300.50');
+tEq(j201.rows[j201.rows.length - 1].balance, FMCashier.balance('100201', LP), '日记账期末 = 账户余额');
+(function () {
+  var manual = [];
+  S.get('entries').forEach(function (e) {
+    if (String(e.accountCode).indexOf('100201') !== 0) return;
+    var v = S.get('vouchers').filter(function (x) { return x.id === e.voucherId; })[0];
+    if (!v || v.period !== LP || v.status !== '已过账') return;
+    manual.push({ date: v.date, line: e.line || 0, d: e.debit || 0, c: e.credit || 0 });
+  });
+  manual.sort(function (x, y) { if (x.date !== y.date) return x.date < y.date ? -1 : 1; return x.line - y.line; });
+  var raw = 486230050, expected = [];
+  manual.forEach(function (m) { raw += m.d - m.c; expected.push(raw); });
+  tEq(j201.rows.map(function (r) { return r.balance; }).join(','), expected.join(','), '日记账余额逐行滚动与独立复算一致');
+})();
+t(j201.rows.every(function (r) { return r.counter && r.counter.length > 0; }), '日记账每行带对方科目');
+t(j201.rows[0].counter.indexOf('1122') >= 0, '收款行对方科目含 1122');
+var j202 = FMCashier.journal('100202', LP);
+tEq(j202.rows.length, 0, '建行户本期无已过账发生');
+tEq(j202.opening, 125000000, '建行户期初');
+
+/* 银行对账：种子流水 */
+var stmt = (S.get('bankStatements') || {})['100201'] || [];
+t(stmt.length >= 8, '种子银行流水 ≥ 8 行（实际 ' + stmt.length + '）');
+var rec = FMCashier.reconcile('100201', LP, stmt);
+tEq(rec.matched.length, 4, '种子流水勾对 4 笔（11 月已过账日记账全部勾上）');
+tEq(rec.unmatchedJournal.length, 0, '企业已记银行未记 0 笔');
+tEq(rec.unmatchedStatement.length, 8, '未达账项 8 笔（含未过账凭证对应的流水）');
+tEq(rec.balance, FMCashier.balance('100201', LP), '对账结果带账面余额');
+t(rec.unmatchedStatement.some(function (s) { return s.summary === '银行手续费'; }), '未达账项单独列出（银行手续费）');
+t(rec.matched.every(function (m) { return m.journal.amount === m.statement.amount; }), '勾对双方金额相等');
+t(rec.matched.every(function (m) { return Math.abs(m.statement.amount) > 0; }), '勾对不含零金额行');
+
+/* 勾对边界（日记账收款行日期 11-05，金额 650,000）：金额差 1 分不勾、日期差 4 天不勾、±3 天内勾 */
+tEq(FMCashier.reconcile('100201', LP, [{ date: '2026-11-05', amount: 65000000, summary: 'a' }]).matched.length, 1, '同日同额勾对');
+tEq(FMCashier.reconcile('100201', LP, [{ date: '2026-11-07', amount: 65000000, summary: 'a' }]).matched.length, 1, '日期差 2 天勾对');
+tEq(FMCashier.reconcile('100201', LP, [{ date: '2026-11-08', amount: 65000000, summary: 'a' }]).matched.length, 1, '日期差 3 天（边界）勾对');
+tEq(FMCashier.reconcile('100201', LP, [{ date: '2026-11-09', amount: 65000000, summary: 'a' }]).matched.length, 0, '日期差 4 天不勾对');
+tEq(FMCashier.reconcile('100201', LP, [{ date: '2026-11-05', amount: 64999999, summary: 'a' }]).matched.length, 0, '金额差 1 分不勾对');
+tEq(FMCashier.reconcile('100201', LP, [{ date: '2026-11-09', amount: 64999999, summary: 'a' }]).unmatchedStatement.length, 1, '不勾对的流水进未达账项');
+
+/* CSV 导入 */
+var imp = FMCashier.importBank('日期,摘要,金额\n2026-11-03,收到货款,"1,234.56"\n2026-11-04,支付货款,-500.50\n2026-11-05,存现,+2000.00\n坏行\n2026-13-01,坏日期,100.00\n2026-11-05,坏金额,abc\n');
+tEq(imp.rows.length, 3, 'CSV 有效行 3 行');
+tEq(imp.rows[0].amount, 123456, 'CSV 千分位金额解析');
+tEq(imp.rows[1].amount, -50050, 'CSV 负金额解析');
+tEq(imp.rows[2].amount, 200000, 'CSV 正号金额解析');
+tEq(imp.rows[0].date, '2026-11-03', 'CSV 日期列');
+tEq(imp.skipped, 3, 'CSV 坏行跳过 3 行');
+tEq(imp.skipReasons.length, 3, '每个坏行有原因');
+t(imp.skipReasons.every(function (r) { return /[\u4e00-\u9fa5]/.test(r); }), '坏行原因为中文');
+tEq(imp.skipReasons[0].indexOf('列数不足') >= 0, true, '列数不足原因');
+tEq(imp.skipReasons[1].indexOf('日期') >= 0, true, '坏日期原因');
+tEq(imp.skipReasons[2].indexOf('金额') >= 0, true, '坏金额原因');
+var imp2 = FMCashier.importBank('');
+tEq(imp2.rows.length + imp2.skipped, 0, '空 CSV 无行');
+
+/* 导入流水 → 勾对（导入金额与日记账均不相等，全部进未达账项） */
+var recImp = FMCashier.reconcile('100201', LP, imp.rows);
+tEq(recImp.matched.length, 0, '导入流水与日记账金额均不等，勾对 0 笔');
+tEq(recImp.unmatchedStatement.length, 3, '导入流水 3 行全部进未达账项');
+
+/* chunk 3 渲染冒烟 */
+smoke(function () {
+  var el = { innerHTML: '', onclick: null };
+  FMARAP.renderARAP(el);
+  if (el.innerHTML.indexOf('应收应付') < 0 || el.innerHTML.indexOf('账龄分析') < 0) throw new Error('往来页内容缺失');
+  /* 切到供应商视图再渲染一次 */
+  var el2 = { innerHTML: '', onclick: null };
+  FMARAP.supplierBalance('S001', LP);
+  FMARAP.renderARAP(el2);
+  if (el2.innerHTML.indexOf('华东电子') < 0) throw new Error('供应商视图缺失');
+}, 'renderARAP');
+smoke(function () {
+  var el = { innerHTML: '', onclick: null };
+  FMCashier.renderCashier(el);
+  if (el.innerHTML.indexOf('出纳 / 银行') < 0 || el.innerHTML.indexOf('银行对账') < 0 || el.innerHTML.indexOf('未达账项') < 0) throw new Error('出纳页内容缺失');
+  /* 切到建行户视角再渲染 */
+  var el2 = { innerHTML: '', onclick: null };
+  FMCashier.balance('100202', LP);
+  FMCashier.renderCashier(el2);
+  if (el2.innerHTML.indexOf('建设银行') < 0) throw new Error('建行户视图缺失');
+}, 'renderCashier');
 
 /* ---------- 汇总 ---------- */
 console.log('');

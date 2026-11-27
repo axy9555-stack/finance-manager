@@ -20,8 +20,9 @@
       <a href="#/closing" data-route="closing">结账</a>
       <a href="#/opening" data-route="opening">期初</a>
       <div class="nav-group">待建模块</div>
-      <a href="#/arap" data-route="arap">应收应付 <span class="chunk-tag">chunk 3</span></a>
-      <a href="#/cash" data-route="cash">出纳 / 银行 <span class="chunk-tag">chunk 3</span></a>
+      <a href="#/arap" data-route="arap">应收应付</a>
+      <a href="#/cashier" data-route="cashier">出纳 / 银行</a>
+      <div class="nav-group">待建模块</div>
       <a href="#/fixedassets" data-route="fixedassets">固定资产 <span class="chunk-tag">chunk 4</span></a>
       <a href="#/payroll" data-route="payroll">薪酬工资 <span class="chunk-tag">chunk 5</span></a>
       <a href="#/tax" data-route="tax">税务管理 <span class="chunk-tag">chunk 6</span></a>
@@ -66,6 +67,8 @@ window.FMToast = function (msg, type) {
 <script src="js/ledger.js"></script>
 <script src="js/closing.js"></script>
 <script src="js/opening.js"></script>
+<script src="js/arap.js"></script>
+<script src="js/cashier.js"></script>
 <script>
 (function () {
   'use strict';
@@ -100,8 +103,6 @@ window.FMToast = function (msg, type) {
 
   /* 待建模块占位 */
   var PLACEHOLDER = {
-    arap: ['应收应付管理', 3],
-    cash: ['出纳 / 银行账户管理', 3],
     fixedassets: ['固定资产', 4],
     payroll: ['薪酬工资（含个税累计预扣法）', 5],
     tax: ['税务管理（增值税 / 企税 / 附加税 / 申报表）', 6],
@@ -147,6 +148,8 @@ window.FMToast = function (msg, type) {
     if (head === 'trialbalance') { FMLedger.renderTrialBalance(view); return; }
     if (head === 'closing') { FMClosing.renderClosing(view); return; }
     if (head === 'opening') { FMOpening.renderOpening(view); return; }
+    if (head === 'arap') { FMARAP.renderARAP(view); return; }
+    if (head === 'cashier') { FMCashier.renderCashier(view); return; }
     if (head === 'settings') { renderSettings(view); return; }
     renderPlaceholder(head);
   }
