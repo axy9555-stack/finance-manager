@@ -23,8 +23,8 @@
       <a href="#/arap" data-route="arap">应收应付</a>
       <a href="#/cashier" data-route="cashier">出纳 / 银行</a>
       <a href="#/assets" data-route="assets">固定资产</a>
+      <a href="#/payroll" data-route="payroll">薪酬工资</a>
       <div class="nav-group">待建模块</div>
-      <a href="#/payroll" data-route="payroll">薪酬工资 <span class="chunk-tag">chunk 5</span></a>
       <a href="#/tax" data-route="tax">税务管理 <span class="chunk-tag">chunk 6</span></a>
       <a href="#/reports" data-route="reports">财务报表 <span class="chunk-tag">chunk 7</span></a>
       <a href="#/invoices" data-route="invoices">发票 <span class="chunk-tag">chunk 8</span></a>
@@ -70,6 +70,7 @@ window.FMToast = function (msg, type) {
 <script src="js/arap.js"></script>
 <script src="js/cashier.js"></script>
 <script src="js/assets.js"></script>
+<script src="js/payroll.js"></script>
 <script>
 (function () {
   'use strict';
@@ -104,7 +105,6 @@ window.FMToast = function (msg, type) {
 
   /* 待建模块占位 */
   var PLACEHOLDER = {
-    payroll: ['薪酬工资（含个税累计预扣法）', 5],
     tax: ['税务管理（增值税 / 企税 / 附加税 / 申报表）', 6],
     reports: ['财务报表（资产负债表 / 利润表 / 现金流量表）', 7],
     invoices: ['发票管理', 8],
@@ -151,6 +151,7 @@ window.FMToast = function (msg, type) {
     if (head === 'arap') { FMARAP.renderARAP(view); return; }
     if (head === 'cashier') { FMCashier.renderCashier(view); return; }
     if (head === 'assets') { FMAssets.renderAssets(view); return; }
+    if (head === 'payroll') { FMPayroll.renderPayroll(view); return; }
     if (head === 'settings') { renderSettings(view); return; }
     renderPlaceholder(head);
   }

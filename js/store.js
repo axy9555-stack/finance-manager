@@ -239,6 +239,15 @@
     var v = seedVouchers();
     var deptDefs = [['总经办', 4], ['财务部', 6], ['人力资源部', 4], ['行政部', 5], ['采购部', 6], ['仓储物流部', 14],
       ['信息技术部', 4], ['销售一部', 18], ['销售二部', 16], ['市场部', 8], ['客服部', 10], ['审计法务部', 5]];
+    // chunk 5：员工月薪（元）与专项附加扣除，未配置的按职务默认（payroll.js 按职务名匹配）
+    var salaryDefs = {
+      '周建国': [35000, { children: 1, parents: 3000 }],
+      '王丽': [8000, { mortgage: true, children: 1 }],
+      '李强': [18000, { rent: 1500 }],
+      '赵磊': [18000, { children: 2 }],
+      '刘洋': [18000, { children: 1 }],
+      '沈涛': [12000, { mortgage: true }]
+    };
     var staffDefs = [['周建国', 'D01', '总经理'], ['吴敏', 'D01', '总经理助理'], ['李强', 'D02', '财务经理'], ['王丽', 'D02', '总账会计'],
       ['陈静', 'D02', '出纳'], ['刘洋', 'D03', '人力资源经理'], ['孙倩', 'D04', '行政主管'], ['赵磊', 'D08', '销售经理'],
       ['钱芳', 'D08', '销售代表'], ['郑浩', 'D09', '销售经理'], ['冯雪', 'D09', '销售代表'], ['褚卫东', 'D05', '采购经理'],
@@ -280,7 +289,11 @@
       vouchers: v.vouchers,
       entries: v.entries,
       departments: deptDefs.map(function (d, i) { return { id: 'D' + ('0' + (i + 1)).slice(-2), name: d[0], headcount: d[1] }; }),
-      staff: staffDefs.map(function (s, i) { return { id: 'E' + ('00' + (i + 1)).slice(-3), name: s[0], dept: s[1], title: s[2] }; }),
+      staff: staffDefs.map(function (s, i) {
+        var cfg = salaryDefs[s[0]] || [];
+        return { id: 'E' + ('00' + (i + 1)).slice(-3), name: s[0], dept: s[1], title: s[2],
+          salary: cfg[0] ? cfg[0] * 100 : 0, deductions: cfg[1] || {} };
+      }),
       customers: custDefs.map(party('C', '0105')),
       suppliers: supDefs.map(party('S', '0206')),
       bankStatements: {

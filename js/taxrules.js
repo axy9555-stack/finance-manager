@@ -33,6 +33,9 @@
       // [累计应纳税所得额上限, 预扣率, 速算扣除数]
       brackets: [[36000, 0.03, 0], [144000, 0.10, 2520], [300000, 0.20, 16920], [420000, 0.25, 31920],
         [660000, 0.30, 52920], [960000, 0.35, 85920], [Infinity, 0.45, 181920]],
+      // 年终奖单独计税：按月换算后的月度税率表（元）
+      monthlyBrackets: [[3000, 0.03, 0], [12000, 0.10, 210], [25000, 0.20, 1410], [35000, 0.25, 2660],
+        [55000, 0.30, 4410], [80000, 0.35, 7160], [Infinity, 0.45, 15160]],
       specialDeductions: {
         childEdu: 2000,          // 子女教育：每个子女每月
         infantCare: 2000,        // 3 岁以下婴幼儿照护：每个婴幼儿每月
@@ -51,7 +54,18 @@
     // 4. 城建税、教育费附加、地方教育附加（计税依据：实际缴纳的增值税 + 消费税）
     surtax: { urban: 0.07, county: 0.05, other: 0.01, edu: 0.03, localEdu: 0.02 },
     sixTaxTwoFeeHalfUntil: '2027-12-31',
-    // 5. 固定资产折旧（最低年限，年）与默认残值率
+    // 5. 社会保险与住房公积金（简化费率，可按当地政策调整；缴费基数=应发工资，
+    //    封顶=当地社平工资×baseCapMultiple，本系统只留参数不做封顶校验）
+    social: {
+      pension: { personal: 0.08, company: 0.16 },
+      medical: { personal: 0.02, company: 0.08 },
+      unemployment: { personal: 0.005, company: 0.005 },
+      injury: { company: 0.005 },
+      maternity: { company: 0.008 },
+      housingFund: { personal: 0.12, company: 0.12 },
+      baseCapMultiple: 3
+    },
+    // 6. 固定资产折旧（最低年限，年）与默认残值率
     depreciation: { building: 20, machinery: 10, vehicle: 4, electronic: 3, residualRate: 0.05 },
     // 印花税
     stampDuty: { saleContract: 0.0003, loanContract: 0.00005, accountBook: 0.00025 }

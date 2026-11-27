@@ -17,7 +17,7 @@ global.FMToast = function () {};
 var fs = require('fs');
 var path = require('path');
 ['js/taxrules.js', 'js/store.js', 'js/accounts.js', 'js/voucher.js', 'js/dashboard.js',
- 'js/ledger.js', 'js/closing.js', 'js/opening.js', 'js/arap.js', 'js/cashier.js', 'js/assets.js'].forEach(function (f) {
+ 'js/ledger.js', 'js/closing.js', 'js/opening.js', 'js/arap.js', 'js/cashier.js', 'js/assets.js', 'js/payroll.js'].forEach(function (f) {
   /* 在全局作用域执行，等价于浏览器的 <script src> */
   var code = fs.readFileSync(path.join(__dirname, f), 'utf8');
   require('vm').runInThisContext(code, { filename: f });
@@ -1200,6 +1200,174 @@ smoke(function () {
   FMAssets.renderAssets(el);
   if (el.innerHTML.indexOf('已处置') < 0) throw new Error('处置状态未显示');
 }, 'renderAssets（含已处置卡片）');
+
+/* ---------- 20. chunk 5：薪酬工资 / 个税 ---------- */
+S.seed();
+section('chunk 5 · 薪酬工资 / 个税');
+tEq(S.get('staff').length, 20, '员工档案 20 人');
+var withDed = S.get('staff').filter(function (s) {
+  var d = s.deductions || {};
+  return d.children || d.infant || d.education || d.mortgage || d.rent || d.parents;
+});
+t(withDed.length >= 5, '带专项附加扣除的员工 ≥ 5 人（实际 ' + withDed.length + '）');
+var e1 = S.get('staff').filter(function (s) { return s.id === 'E001'; })[0];
+tEq(e1.salary, 3500000, '周建国月薪 35,000.00');
+tEq(e1.deductions.children + '/' + e1.deductions.parents, '1/3000', '周建国扣除：子女教育 1 人 + 赡养老人 3000');
+tEq(FMPayroll.getStaffPay('E001'), 3500000, 'getStaffPay 档案优先');
+tEq(FMPayroll.getStaffPay('E004'), 800000, '王丽月薪 8,000.00');
+tEq(FMPayroll.getStaffPay('E002'), 3500000, '吴敏按职务默认（总经理助理 → 总经理档）');
+tEq(FMPayroll.getStaffPay('E009'), 600000, '钱芳销售代表默认 6,000.00');
+tEq(FMPayroll.getStaffPay('E005'), 800000, '出纳按兜底 8,000.00');
+
+/* 社保：个人 22.5%（8+2+0.5+12），单位 37.8% */
+var soc8 = FMPayroll.calcSocial(800000);
+tEq(soc8.personalTotal, 180000, '个人五险一金 = 应发×22.5%（8000 → 1,800.00）');
+tEq(soc8.personal.pension, 64000, '个人养老 8%');
+tEq(soc8.personal.fund, 96000, '个人公积金 12%');
+tEq(soc8.companyTotal, 302400, '单位五险一金 = 应发×37.8%（8000 → 3,024.00）');
+var soc18 = FMPayroll.calcSocial(1800000);
+tEq(soc18.personalTotal, 405000, '18000 应发个人社保公积金 4,050.00');
+tEq(soc18.company.pension, 288000, '单位养老 16% = 2,880.00');
+
+/* 个税：8000 无专项附加（陈静 E005）：应纳税所得额 = 8000−5000−1800 = 1200 → 3% → 36.00 */
+var t5 = FMPayroll.calcMonthlyTax('E005', LP);
+tEq(t5.taxable, 120000, '8000 档应纳税所得额 = 8000−5000−1800 = 1,200.00');
+tEq(t5.rate, 0.03, '落在 3% 档');
+tEq(t5.taxPayable, 3600, '月税 36.00（按规格自给费率逐笔计算；规格示例“为 0”与其自给费率矛盾，以费率为准）');
+/* 18000（郑浩 E010，无专项附加）：18000−5000−1890−2160 = 8950 → 3% → 268.50（与规格手工算一致） */
+var t18 = FMPayroll.calcMonthlyTax('E010', LP);
+tEq(t18.taxable, 895000, '18000 档应纳税所得额 8,950.00');
+tEq(t18.taxPayable, 26850, '税额 8950×3% = 268.50（26850 分）');
+/* 专项附加降低税额：李强 E003 租金 1500 */
+var t3 = FMPayroll.calcMonthlyTax('E003', LP);
+tEq(t3.taxable, 745000, 'E003 应纳税所得额 = 18000−5000−4050−1500 = 7,450.00');
+tEq(t3.taxPayable, 22350, '税额 22,350 分（比无附加少 4,500 分）');
+/* 应纳税所得额 ≤0 → 0（王丽 E004：8000−5000−1800−3000 <0） */
+tEq(FMPayroll.calcMonthlyTax('E004', LP).taxPayable, 0, '应纳税所得额 ≤0 税额为 0，不出负数');
+/* 高档：5 万累计 → 10% 档 − 速算 2520 */
+var t10 = FMPayroll.calcTax({ cumIncome: 5000000, cumDeduction5000: 0, cumSocialPersonal: 0, cumExtraDeduction: 0, cumTaxPaid: 0 });
+tEq(t10.rate + '/' + t10.quickDeduction, '0.1/252000', '落入 10% 档，速算扣除 2,520.00（来自 taxrules）');
+tEq(t10.taxPayable, 248000, '50000×10% − 2520 = 2,480.00');
+/* 累计已扣大于累计税额 → 不出负 */
+tEq(FMPayroll.calcTax({ cumIncome: 100000, cumTaxPaid: 999999 }).taxPayable, 0, '累计已扣超过累计税额时本期为 0');
+
+/* 累计预扣第二个月：税额 = 累计税 − 已扣（临时塞 2026-10 工资单，验完移除） */
+(function () {
+  var tmp = { id: 'PAY-2026-10-E010', staffId: 'E010', period: '2026-10', gross: 1800000, social: 189000, fund: 216000, extra: 0, taxable: 895000, rate: 0.03, quick: 0, tax: 26850, net: 1388150, status: '已发放', payDate: '' };
+  S.get('payrolls').push(tmp);
+  var t2 = FMPayroll.calcMonthlyTax('E010', '2026-11');
+  tEq(t2.months, 2, '累计月数 2 个月');
+  tEq(t2.cumIncome, 3600000, '累计收入 36,000.00');
+  tEq(t2.cumDeduction5000, 1000000, '减除费用 5000×2 月');
+  tEq(t2.taxPayable, 26850, '第二个月税额 = 累计 53,700 − 已扣 26,850 = 26,850');
+  S.get('payrolls').splice(S.get('payrolls').indexOf(tmp), 1);
+})();
+
+/* 年终奖单独计税（÷12 找按月换算税率表，来自 taxrules.monthlyBrackets） */
+var b1 = FMPayroll.calcBonusTax(3600000, '2026-12-15');
+tEq(b1.ok && b1.rate, 0.03, '年终奖 36000 ÷12 = 3000 → 3% 档');
+tEq(b1.tax, 108000, '年终奖税 = 36000×3% = 1,080.00（108000 分）');
+var b2 = FMPayroll.calcBonusTax(4800000, '2026-12-15');
+tEq(b2.rate + '/' + b2.quickDeduction, '0.1/21000', '48000 ÷12 = 4000 → 10% 档、速算 210.00');
+tEq(b2.tax, 459000, '年终奖税 = 48000×10% − 210 = 4,590.00');
+var b3 = FMPayroll.calcBonusTax(3600000, '2028-01-01');
+t(!b3.ok && /2027-12-31/.test(b3.reason), '政策到期（2028 起）拒绝单独计税');
+t(!FMPayroll.calcBonusTax(-1, '2026-12-01').ok, '非法年终奖金额拒绝');
+
+/* 计提 2026-11 工资 */
+tEq(FMPayroll.accrue('2026-12').ok, false, '非当前期间不能计提');
+var ac = FMPayroll.accrue(LP);
+tEq(ac.ok, true, '计提 2026-11 工资成功');
+tEq(ac.count, 20, '生成 20 条工资单');
+tEq(ac.totalGross, 28600000, '应发合计 286,000.00');
+tEq(ac.totalSocialPersonal, 3003000, '个人三险合计 30,030.00（10.5%）');
+tEq(ac.totalFundPersonal, 3432000, '个人公积金合计 34,320.00（12%）');
+tEq(ac.totalTax, 322950, '个税合计 3,229.50');
+tEq(ac.totalNet, 21842050, '实发合计 218,420.50');
+tEq(ac.totalSocialCompany, 7378800, '单位社保合计 73,788.00（25.8%）');
+tEq(ac.totalFundCompany, 3432000, '单位公积金合计 34,320.00（12%）');
+(function () {
+  var recs = FMPayroll.list(LP);
+  tEq(recs.length, 20, 'state.payrolls 本期 20 条');
+  t(recs.every(function (r) { return r.status === '已计提'; }), '工资单状态已计提');
+  var e4 = recs.filter(function (r) { return r.staffId === 'E004'; })[0];
+  tEq(e4.tax, 0, 'E004 本期个税 0');
+  tEq(recs.filter(function (r) { return r.staffId === 'E010'; })[0].tax, 26850, 'E010 个税 268.50');
+  var v = S.get('vouchers').filter(function (x) { return x.id === ac.id; })[0];
+  tEq(v.status, '已过账', '计提凭证已过账');
+  tEq(v.maker, '系统薪酬', '制单人系统薪酬');
+  var es = V.entriesOf(ac.id);
+  tEq(es.reduce(function (s, e) { return s + e.debit; }, 0), es.reduce(function (s, e) { return s + e.credit; }, 0), '计提凭证借贷平衡');
+  function creditRow(code) { return es.filter(function (e) { return e.accountCode === code && e.credit > 0; }).reduce(function (s, e) { return s + e.credit; }, 0); }
+  tEq(creditRow('221101'), 28600000, '贷 221101 = 应发合计');
+  tEq(creditRow('221102'), 7378800, '贷 221102 = 单位社保');
+  tEq(creditRow('221103'), 3432000, '贷 221103 = 单位公积金');
+  function debitRow(code, summaryPrefix) {
+    return es.filter(function (e) { return e.accountCode === code && (!summaryPrefix || e.summary.indexOf(summaryPrefix) === 0); }).reduce(function (s, e) { return s + e.debit; }, 0);
+  }
+  tEq(debitRow('4101', '计提工资'), 2000000, '生产部门工资进 4101 制造费用（仓储物流 D06）');
+  tEq(debitRow('520101', '计提工资'), 7800000, '销售部门工资进 520101 职工薪酬');
+  tEq(debitRow('530101', '计提工资'), 18800000, '管理部门工资进 530101 职工薪酬');
+  tEq(debitRow('520107'), 2012400, '销售部门单位社保进 520107（新增末级科目）');
+  tEq(debitRow('530111'), 2256000, '管理部门单位公积金进 530111（新增末级科目）');
+  /* 期初 221101（10 月计提未发）已被种子凭证 0005 发放核销，余额 0 + 本期计提应发 */
+  tEq(A.balance('221101', LP), 28600000, '221101 余额 = 本期计提应发（期初已被 0005 发放核销）');
+})();
+r = FMPayroll.accrue(LP);
+t(!r.ok && r.reason === '本期工资已计提，不能重复计提', '重复计提拒绝');
+(function () {
+  var cp = S.get('closedPeriods') || [];
+  cp.push(LP);
+  S.set('closedPeriods', cp);
+  var rr = FMPayroll.accrue(LP);
+  t(!rr.ok && /已结账/.test(rr.reason), '已结账期间不能计提');
+  S.set('closedPeriods', (S.get('closedPeriods') || []).filter(function (p) { return p !== LP; }));
+})();
+
+/* 发放 2026-11 工资 */
+var balBefore = A.balance('221101', LP);
+var py = FMPayroll.pay(LP);
+tEq(py.ok, true, '发放 2026-11 工资成功');
+tEq(py.totalGross, 28600000, '发放应发合计 286,000.00');
+tEq(py.totalNet, 21842050, '实发合计 218,420.50');
+tEq(py.totalTax, 322950, '代扣个税合计 3,229.50');
+(function () {
+  var v = S.get('vouchers').filter(function (x) { return x.id === py.id; })[0];
+  tEq(v.status, '已过账', '发放凭证已过账');
+  var es = V.entriesOf(py.id);
+  tEq(es.reduce(function (s, e) { return s + e.debit; }, 0), es.reduce(function (s, e) { return s + e.credit; }, 0), '发放凭证借贷平衡');
+  tEq(es.reduce(function (s, e) { return s + e.debit; }, 0), 28600000, '借 221101 = 应发合计');
+  function creditRow(code) { return es.filter(function (e) { return e.accountCode === code; }).reduce(function (s, e) { return s + e.credit; }, 0); }
+  tEq(creditRow('100201'), 21842050, '贷 100201 = 实发合计');
+  tEq(creditRow('222104'), 322950, '贷 222104 = 个税合计');
+  tEq(creditRow('221102'), 3003000, '贷 221102 = 个人三险');
+  tEq(creditRow('221103'), 3432000, '贷 221103 = 个人公积金');
+})();
+t(FMPayroll.list(LP).every(function (r2) { return r2.status === '已发放' && r2.payDate === '2026-11-30'; }),
+  '工资单状态已发放并记录发放日期');
+tEq(A.balance('221101', LP), 0, '发放后 221101 清零（期初已被 0005 核销、本期计提-发放相抵）');
+tEq(A.balance('222104', LP), 2180000 + 322950, '222104 余额 = 种子未缴个税 21,800 + 本期代扣 3,229.50');
+r = FMPayroll.pay(LP);
+t(!r.ok && /已发放/.test(r.reason), '重复发放拒绝');
+(function () {
+  var saved = S.get('payrolls');
+  S.set('payrolls', []);
+  var rr = FMPayroll.pay(LP);
+  t(!rr.ok && /未计提/.test(rr.reason), '未计提先发拒绝');
+  S.set('payrolls', saved);
+})();
+
+/* 渲染冒烟 */
+smoke(function () {
+  var el = { innerHTML: '', onclick: null };
+  FMPayroll.renderPayroll(el);
+  if (el.innerHTML.indexOf('薪酬工资') < 0 || el.innerHTML.indexOf('个税明细') < 0 || el.innerHTML.indexOf('五险一金汇总') < 0) throw new Error('工资页内容缺失');
+}, 'renderPayroll');
+smoke(function () {
+  var el = { innerHTML: '', onclick: null };
+  FMPayroll.renderPayroll(el);
+  if (el.innerHTML.indexOf('已发放') < 0) throw new Error('发放状态未显示');
+}, 'renderPayroll（已发放）');
 
 /* ---------- 汇总 ---------- */
 console.log('');
