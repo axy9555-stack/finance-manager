@@ -26,11 +26,9 @@
       <a href="#/payroll" data-route="payroll">薪酬工资</a>
       <a href="#/tax" data-route="tax">税务管理</a>
       <a href="#/reports" data-route="reports">财务报表</a>
-      <div class="nav-group">待建模块</div>
-      <a href="#/invoices" data-route="invoices">发票 <span class="chunk-tag">chunk 8</span></a>
-      <a href="#/budget" data-route="budget">预算 <span class="chunk-tag">chunk 8</span></a>
-      <a href="#/audit" data-route="audit">审计日志 <span class="chunk-tag">chunk 8</span></a>
-      <a href="#/users" data-route="users">操作员权限 <span class="chunk-tag">chunk 8</span></a>
+      <a href="#/invoices" data-route="invoices">发票管理</a>
+      <a href="#/budget" data-route="budget">预算管理</a>
+      <a href="#/audit" data-route="audit">审计日志</a>
     </nav>
     <div class="sidebar-foot">单机版 · 数据存本机</div>
   </aside>
@@ -38,6 +36,7 @@
     <header class="topbar">
       <div class="company" id="top-company">—</div>
       <div class="period" id="top-period">—</div>
+      <div>角色 <select id="top-role" class="input" style="width:90px;padding:2px 6px"></select></div>
     </header>
     <main id="view" class="view"></main>
   </div>
@@ -59,20 +58,24 @@ window.FMToast = function (msg, type) {
   }, 2600);
 };
 </script>
-<script src="js/taxrules.js?v=20261127h"></script>
-<script src="js/store.js?v=20261127h"></script>
-<script src="js/accounts.js?v=20261127h"></script>
-<script src="js/voucher.js?v=20261127h"></script>
-<script src="js/dashboard.js?v=20261127h"></script>
-<script src="js/ledger.js?v=20261127h"></script>
-<script src="js/closing.js?v=20261127h"></script>
-<script src="js/opening.js?v=20261127h"></script>
-<script src="js/arap.js?v=20261127h"></script>
-<script src="js/cashier.js?v=20261127h"></script>
-<script src="js/assets.js?v=20261127h"></script>
-<script src="js/payroll.js?v=20261127h"></script>
-<script src="js/tax.js?v=20261127h"></script>
-<script src="js/reports.js?v=20261127h"></script>
+<script src="js/taxrules.js?v=20261128"></script>
+<script src="js/store.js?v=20261128"></script>
+<script src="js/accounts.js?v=20261128"></script>
+<script src="js/roles.js?v=20261128"></script>
+<script src="js/voucher.js?v=20261128"></script>
+<script src="js/dashboard.js?v=20261128"></script>
+<script src="js/ledger.js?v=20261128"></script>
+<script src="js/closing.js?v=20261128"></script>
+<script src="js/opening.js?v=20261128"></script>
+<script src="js/arap.js?v=20261128"></script>
+<script src="js/cashier.js?v=20261128"></script>
+<script src="js/assets.js?v=20261128"></script>
+<script src="js/payroll.js?v=20261128"></script>
+<script src="js/tax.js?v=20261128"></script>
+<script src="js/reports.js?v=20261128"></script>
+<script src="js/invoices.js?v=20261128"></script>
+<script src="js/budget.js?v=20261128"></script>
+<script src="js/audit.js?v=20261128"></script>
 <script>
 (function () {
   'use strict';
@@ -98,23 +101,48 @@ window.FMToast = function (msg, type) {
       ' · 当前种子版本：' + esc(FMStore.SEED_VERSION) +
       '。打开系统时若版本不一致会自动备份旧数据（fm_backup_<旧版本>）并按当前种子重建；也可随时用下方按钮一键还原。</p>' +
       '<p class="muted">数据保存在本机浏览器 localStorage（键 finance-manager-v1）。恢复演示数据会按当前种子整库重建（旧数据自动备份），请先确认没有需要保留的录入。</p>' +
-      '<button class="btn btn-danger" id="btn-reset">恢复演示数据（按当前种子重建）</button>' +
-      '<p class="muted" style="margin-top:12px">多用户权限管理将在 chunk 8 提供；单机版无多用户与远程访问，多用户需上服务器版。</p>';
+      '<button class="btn btn-danger" id="btn-reset">恢复演示数据（按当前种子重建，仅管理员）</button>' +
+      '<div style="margin-top:12px">' +
+      '<button class="btn" id="btn-export">导出备份（JSON）</button>' +
+      '　<input type="file" id="file-import" accept=".json,application/json" style="display:none">' +
+      '<button class="btn" id="btn-import">导入备份（JSON）</button>' +
+      '<span class="muted" id="import-tip" style="margin-left:8px">导入前当前库自动备份到 fm_backup_manual；仅接受当前种子版本的备份</span></div>' +
+      '<p class="muted" style="margin-top:12px">角色切换在顶栏（管理员 / 会计 / 出纳 / 审计）。单机版以角色近似多操作员分工；真实的多操作员、权限矩阵与远程协同需上服务器版。</p>';
     document.getElementById('btn-reset').onclick = function () {
+      var g = FMRoles.guard('resetDemo'); // chunk 8：仅管理员可恢复演示数据
+      if (!g.ok) { FMToast(g.reason, 'bad'); return; }
       if (!window.confirm('确定恢复演示数据？本机现有数据将被清空。')) return;
       FMStore.reset();
       FMToast('已恢复演示数据', 'ok');
       route();
     };
+    document.getElementById('btn-export').onclick = function () {
+      var json = FMStore.exportBackup(); // 浏览器内触发下载 finance-manager-backup-YYYYMMDD.json
+      FMToast('已导出备份（' + Math.round(json.length / 1024) + ' KB）', 'ok');
+      FMStore.log('导出备份', '', 'JSON ' + json.length + ' 字节');
+    };
+    document.getElementById('btn-import').onclick = function () {
+      var g = FMRoles.guard('resetDemo'); // 导入整库替换与恢复演示同级别敏感，用同一权限
+      if (!g.ok) { FMToast(g.reason, 'bad'); return; }
+      var fi = document.getElementById('file-import');
+      fi.onchange = function () {
+        var f = fi.files && fi.files[0];
+        if (!f) return;
+        var reader = new FileReader();
+        reader.onload = function () {
+          var r = FMStore.importBackup(String(reader.result || ''));
+          FMToast(r.ok ? '导入成功：种子版本 ' + r.seedVersion : r.reason, r.ok ? 'ok' : 'bad');
+          if (r.ok) route();
+        };
+        reader.readAsText(f);
+        fi.value = ''; // 允许重复选择同一文件
+      };
+      fi.click();
+    };
   }
 
-  /* 待建模块占位 */
-  var PLACEHOLDER = {
-    invoices: ['发票管理', 8],
-    budget: ['预算管理', 8],
-    audit: ['审计日志', 8],
-    users: ['操作员与角色权限', 8]
-  };
+  /* 待建模块占位（chunk 8 已全部完成，目前无待建页） */
+  var PLACEHOLDER = {};
 
   function renderPlaceholder(route) {
     var def = PLACEHOLDER[route] || ['该模块', '?'];
@@ -132,6 +160,7 @@ window.FMToast = function (msg, type) {
     var c = FMStore.get('company') || {}, p = FMStore.get('periods') || { current: '' };
     document.getElementById('top-company').textContent = c.name || '财务管理系统';
     document.getElementById('top-period').textContent = '会计期间：' + p.current + ' · 操作员：' + (c.operator || '');
+    FMRoles.renderRoleSwitch(document.getElementById('top-role')); // chunk 8：顶栏角色下拉
     // 导航高亮
     var navKey = head.indexOf('voucher') === 0 ? 'vouchers' : head;
     var links = document.querySelectorAll('#nav a[data-route]');
@@ -157,12 +186,25 @@ window.FMToast = function (msg, type) {
     if (head === 'payroll') { FMPayroll.renderPayroll(view); return; }
     if (head === 'tax') { FMTax.renderTax(view); return; }
     if (head === 'reports') { FMReports.renderReports(view); return; }
+    if (head === 'invoices') { FMInvoices.renderInvoices(view); return; }
+    if (head === 'budget') { FMBudget.renderBudget(view); return; }
+    if (head === 'audit') { FMAudit.renderAudit(view); return; }
     if (head === 'settings') { renderSettings(view); return; }
     renderPlaceholder(head);
   }
 
   FMStore.load();
   window.addEventListener('hashchange', route);
+  /* 顶栏角色切换：写审计日志 + 重渲染当前页 */
+  var roleSel = document.getElementById('top-role');
+  if (roleSel) {
+    FMRoles.renderRoleSwitch(roleSel);
+    roleSel.onchange = function () {
+      var r = FMRoles.setRole(roleSel.value);
+      FMToast(r.ok ? '已切换角色：' + r.role : r.reason, r.ok ? 'ok' : 'bad');
+      route();
+    };
+  }
   route();
 })();
 </script>

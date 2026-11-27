@@ -145,6 +145,9 @@
   }
 
   function post(id) {
+    /* chunk 8：角色权限拦截（出纳/审计不能过账） */
+    var rg = root.FMRoles ? root.FMRoles.guard('post') : { ok: true };
+    if (!rg.ok) return fail(rg.reason);
     var v = getV(id);
     if (!v) return fail('凭证“' + id + '”不存在');
     if (v.status === '未审核') return fail('未审核凭证不能过账，请先审核');
@@ -193,6 +196,22 @@
     });
     if (res.ok) S().log('红字冲销', id, '生成冲销凭证 ' + res.id);
     return res;
+  }
+
+  /* 删除凭证（chunk 8）：仅限未审核凭证；已审核/已过账不可删（应走红字冲销）。
+   * 管理员专属（会计/出纳/审计被 guard 拦截）；凭证与分录一并移除，写审计日志。 */
+  function deleteVoucher(id) {
+    var rg = root.FMRoles ? root.FMRoles.guard('deleteVoucher') : { ok: true };
+    if (!rg.ok) return fail(rg.reason);
+    var v = getV(id);
+    if (!v) return fail('凭证“' + id + '”不存在');
+    if (v.status !== '未审核') return fail('只有未审核凭证可以删除（当前状态：' + v.status + '），已审核/已过账请走红字冲销');
+    var vs = vouchers().filter(function (x) { return x.id !== id; });
+    var es = entries().filter(function (e) { return e.voucherId !== id; });
+    S().set('vouchers', vs);
+    S().set('entries', es);
+    S().log('删除凭证', id, v.summary + '（' + v.maker + ' 制单）');
+    return { ok: true, id: id };
   }
 
   /* ---------- 查询 ---------- */
@@ -289,7 +308,8 @@
       var es = entriesOf(v.id), dt = 0;
       es.forEach(function (e) { dt += e.debit || 0; });
       var ops = '<button class="btn btn-sm" data-act="view" data-id="' + esc(v.id) + '">查看</button>';
-      if (v.status === '未审核') ops += ' <button class="btn btn-sm" data-act="audit" data-id="' + esc(v.id) + '">审核</button>';
+      if (v.status === '未审核') ops += ' <button class="btn btn-sm" data-act="audit" data-id="' + esc(v.id) + '">审核</button>' +
+        ' <button class="btn btn-sm btn-danger" data-act="del" data-id="' + esc(v.id) + '" title="删除未审核凭证">删</button>';
       if (v.status === '已审核') ops += ' <button class="btn btn-sm" data-act="post" data-id="' + esc(v.id) + '">过账</button>';
       if (v.status === '已过账') ops += ' <button class="btn btn-sm" data-act="unpost" data-id="' + esc(v.id) + '">反过账</button>' +
         ' <button class="btn btn-sm btn-danger" data-act="reverse" data-id="' + esc(v.id) + '">红字冲销</button>';
@@ -323,6 +343,7 @@
       } else if (act === 'post') res = post(id);
       else if (act === 'unpost') res = unpost(id);
       else if (act === 'reverse') res = reverse(id);
+      else if (act === 'del') res = deleteVoucher(id);
       if (res && !res.ok) root.FMToast(res.reason, 'bad');
       else if (res && res.ok) root.FMToast('操作成功' + (res.id ? '：' + res.id : ''), 'ok');
       if (res && res.ok && act === 'reverse') location.hash = '#/vouchers';
@@ -576,7 +597,7 @@
   }
 
   root.FMVoucher = {
-    STATUS: STATUS, create: create, audit: audit, post: post, unpost: unpost, reverse: reverse,
+    STATUS: STATUS, create: create, audit: audit, post: post, unpost: unpost, reverse: reverse, deleteVoucher: deleteVoucher,
     list: list, trialBalance: trialBalance, entriesOf: entriesOf, nextId: nextId,
     renderVouchers: renderVouchers, renderVoucherForm: renderVoucherForm
   };

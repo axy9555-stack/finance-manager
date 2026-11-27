@@ -18,7 +18,7 @@ var fs = require('fs');
 var path = require('path');
 ['js/taxrules.js', 'js/store.js', 'js/accounts.js', 'js/voucher.js', 'js/dashboard.js',
  'js/ledger.js', 'js/closing.js', 'js/opening.js', 'js/arap.js', 'js/cashier.js', 'js/assets.js', 'js/payroll.js', 'js/tax.js',
- 'js/reports.js'].forEach(function (f) {
+ 'js/reports.js', 'js/roles.js', 'js/invoices.js', 'js/budget.js', 'js/audit.js'].forEach(function (f) {
   /* 在全局作用域执行，等价于浏览器的 <script src> */
   var code = fs.readFileSync(path.join(__dirname, f), 'utf8');
   require('vm').runInThisContext(code, { filename: f });
@@ -1848,7 +1848,7 @@ S.seed();
 section('chunk 7 修正 · 种子版本与旧数据重建');
 S.seed();
 t(typeof FMStore.SEED_VERSION === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(FMStore.SEED_VERSION), 'FMStore.SEED_VERSION 为日期格式字符串常量');
-tEq(FMStore.SEED_VERSION, '2026-11-27', 'SEED_VERSION = 2026-11-27');
+tEq(FMStore.SEED_VERSION, '2026-11-28', 'SEED_VERSION = 2026-11-28');
 tEq(S.get().seedVersion, FMStore.SEED_VERSION, 'seed() 把当前种子版本写入 state.seedVersion');
 /* 版本相同：load() 不重建，用户改动保留 */
 (function () {
@@ -1880,6 +1880,214 @@ tEq(S.get().seedVersion, FMStore.SEED_VERSION, 'seed() 把当前种子版本写�
   delete global.localStorage;
   S.seed(); // 恢复内存干净种子，供后续断言使用
   tEq(A.get('1601').opening, 1028000000, '恢复后 fresh 种子 1601 期初 = ¥10,280,000');
+})();
+
+/* ---------- 26. chunk 8：发票管理 ---------- */
+section('chunk 8 · 发票管理');
+S.seed();
+(function () {
+  tEq(S.get('invoices').length, 4, '发票种子 4 张（开票/收票各 ≥1）');
+  var seeded = FMInvoices.getById('INV-2026-11-0001');
+  tEq(seeded && seeded.tax, 15600000, '种子销售发票税额 = 156,000.00（含税 1,356,000×13% 倒算）');
+  tEq(FMInvoices.list({ type: '销售', status: '已开' }).length, 2, '种子已开销售发票 2 张');
+  /* 开票：含税 11,300×13% → 税额 1,300.00（手算对照） */
+  var r1 = FMInvoices.issueSales({ customerId: 'C005', amount: '11300.00', taxRate: 0.13, date: '2026-11-25', no: '26337103', summary: '零星销售' });
+  tEq(r1.ok && r1.invoice.tax, 130000, '开票税额 = 1,300.00（含税 11,300 − 不含税 10,000）');
+  tEq(r1.invoice.net, 1000000, '不含税金额 = 10,000.00');
+  tEq(r1.invoice.status, '已开', '开票后状态已开');
+  t(!!FMInvoices.getById(r1.id), 'getById 能查到新发票');
+  tEq(FMInvoices.getById(r1.id).id, 'INV-2026-11-0005', '编号自动递增');
+  t(!FMInvoices.issueSales({ customerId: 'C999', amount: '100.00', taxRate: 0.13, date: '2026-11-25' }).ok, '客户不存在拒绝');
+  t(!FMInvoices.issueSales({ customerId: 'C001', amount: '100.00', taxRate: 0.17, date: '2026-11-25' }).ok, '税率 17% 拒绝（只能 13/9/6）');
+  t(!FMInvoices.issueSales({ customerId: 'C001', amount: '-5', taxRate: 0.13, date: '2026-11-25' }).ok, '负金额拒绝');
+  /* 收票 */
+  var r2 = FMInvoices.receivePurchase({ supplierId: 'S001', amount: '904000.00', taxRate: 0.13, date: '2026-11-26', summary: '采购收票' });
+  tEq(r2.ok && r2.invoice.type, '采购', '收票类型为采购');
+  tEq(r2.invoice.tax, 10400000, '收票税额 = 104,000.00（含税 904,000×13% 倒算）');
+  t(!FMInvoices.receivePurchase({ supplierId: 'S999', amount: '100.00', taxRate: 0.13, date: '2026-11-26' }).ok, '供应商不存在拒绝');
+  /* 作废：未入账可作废；已关联凭证拒绝 */
+  var rv = FMInvoices.void(r1.id);
+  tEq(rv.ok && rv.invoice.status, '已作废', '未入账发票可作废');
+  t(!FMInvoices.void(r1.id).ok && /重复作废/.test(FMInvoices.void(r1.id).reason), '重复作废拒绝');
+  var bad = FMInvoices.void('INV-2026-11-0001');
+  t(!bad.ok && /凭证/.test(bad.reason), '已关联凭证的种子发票作废被拒（先检查 voucherId）');
+  /* 关联凭证后再作废也拒绝 */
+  var rl = FMInvoices.linkVoucher('INV-2026-11-0003', '记-2026-11-0001');
+  tEq(rl.ok, true, '未开票草稿可关联凭证');
+  bad = FMInvoices.void('INV-2026-11-0003');
+  t(!bad.ok && /凭证/.test(bad.reason), '关联后作废被拒');
+  t(!FMInvoices.linkVoucher('INV-2026-11-0003', '记-2026-11-0001').ok, '重复关联拒绝');
+  t(!FMInvoices.linkVoucher('INV-2026-11-0003', '记-1999-99-9999').ok, '关联不存在的凭证拒绝');
+  /* 勾稽（只展示不强校验） */
+  var rec = FMInvoices.reconciliation(LP);
+  tEq(rec.salesIssued, 135600000 + 1130000, '当期已开销售发票合计 1,367,300.00');
+  tEq(rec.purchaseIssued, 90400000 * 2, '当期已开采购发票合计 = 种子 904,000 + 新收票 904,000');
+  tEq(rec.revenuePosted, A.activity('6001', LP, { postedOnly: true, periodOnly: true }).credit -
+    A.activity('6001', LP, { postedOnly: true, periodOnly: true }).debit, '勾稽收入取 6001 已过账贷方净额');
+  t(rec.salesDiff !== 0, '种子数据不强制勾稽（差额仅展示）');
+})();
+smoke(function () {
+  var el = { innerHTML: '', onclick: null };
+  FMInvoices.renderInvoices(el);
+  ['发票管理', '开票', '收票', '作废', '勾稽仅为展示参考'].forEach(function (k) {
+    if (el.innerHTML.indexOf(k) < 0) throw new Error('缺 ' + k);
+  });
+}, 'renderInvoices');
+
+/* ---------- 27. chunk 8：预算管理 ---------- */
+section('chunk 8 · 预算管理');
+S.seed();
+(function () {
+  var b = FMBudget.getBudget('', '530101', 2026);
+  t(!!b, '种子预算存在（管理费用 530101）');
+  tEq(b.monthly[10], 3000000, '管理费用月预算 30,000.00');
+  tEq(b.monthly.reduce(function (s, c) { return s + c; }, 0), 36000000, '年度预算合计 360,000.00');
+  tEq(FMBudget.getBudget('', '520101', 2026).monthly[0], 2500000, '销售费用月预算 25,000.00');
+  tEq(FMBudget.getBudget('', '4101', 2026).monthly[0], 5000000, '制造费用月预算 50,000.00');
+  var ab0 = FMBudget.actualVsBudget(LP, '', '530101');
+  tEq(ab0.actual, 0, 'fresh seed 管理费用实际 0（计提凭证未过账）');
+  tEq(ab0.over, false, '未超支');
+  tEq(FMPayroll.accrue(LP).ok, true, '计提工资成功（费用科目借方过账）');
+  var ab = FMBudget.actualVsBudget(LP, '', '530101');
+  var act = A.activity('530101', LP, { postedOnly: true, periodOnly: true });
+  tEq(ab.actual, act.debit - act.credit, '实际数与 activity() 借方发生额一致（独立取数）');
+  t(ab.actual > 0 && ab.actual === act.debit, '实际数 > 0 且等于借方发生额');
+  tEq(ab.budget, 3000000, '当期预算 30,000.00');
+  tEq(ab.over, true, '超支标记 over = true（实际工资远超月预算）');
+  tEq(ab.diff, 3000000 - ab.actual, '差额 = 预算 − 实际');
+  /* 销售费用预算：fresh seed 计提后销售工资 > 25,000 也超支 */
+  tEq(FMBudget.actualVsBudget(LP, '', '520101').over, true, '销售费用同样超支');
+  /* setBudget：新增 + 覆盖 + 校验 */
+  var sb = FMBudget.setBudget({ dept: 'D02', accountCode: '530102', year: 2026, monthly: '1000.00' });
+  tEq(sb.ok && FMBudget.getBudget('D02', '530102', 2026).monthly[0], 100000, 'setBudget 新增部门预算（1,000.00/月）');
+  FMBudget.setBudget({ dept: 'D02', accountCode: '530102', year: 2026, monthly: ['2000.00'] });
+  tEq(FMBudget.getBudget('D02', '530102', 2026).monthly[0], 200000, '同键覆盖更新');
+  t(!FMBudget.setBudget({ dept: '', accountCode: '5301', year: 2026, monthly: '100.00' }).ok, '非末级科目拒绝');
+  t(!FMBudget.setBudget({ dept: '', accountCode: '6001', year: 2026, monthly: '100.00' }).ok, '收入科目拒绝（只能 4101/5201/5301 族）');
+  t(!FMBudget.setBudget({ dept: '', accountCode: '530102', year: 2026, monthly: '-5' }).ok, '负预算拒绝');
+  /* 部门维度：D02 的办公费没有发生额 → 不超支 */
+  tEq(FMBudget.actualVsBudget(LP, 'D02', '530102').over, false, '按部门过滤后未超支');
+})();
+smoke(function () {
+  var el = { innerHTML: '', onclick: null };
+  FMBudget.renderBudget(el);
+  if (el.innerHTML.indexOf('预算管理') < 0 || el.innerHTML.indexOf('超支') < 0) throw new Error('预算页内容缺失');
+}, 'renderBudget');
+
+/* ---------- 28. chunk 8：角色权限 ---------- */
+section('chunk 8 · 角色权限');
+S.seed();
+(function () {
+  tEq(FMRoles.current(), '管理员', '种子默认管理员');
+  ['post', 'unclose', 'deleteVoucher', 'resetDemo', 'fileTax'].forEach(function (a) {
+    t(FMRoles.can(a), '管理员可执行 ' + a);
+  });
+  /* 会计 */
+  FMRoles.setRole('会计');
+  tEq(FMRoles.current(), '会计', '切换到会计');
+  tEq(FMRoles.can('post'), true, '会计可过账');
+  tEq(FMRoles.can('fileTax'), true, '会计可申报');
+  tEq(FMRoles.can('deleteVoucher'), false, '会计不能删凭证');
+  tEq(FMRoles.can('unclose'), false, '会计不能反结账');
+  tEq(FMRoles.can('resetDemo'), false, '会计不能恢复演示数据');
+  /* 功能拦截：会计删除凭证被拒且不执行 */
+  var v = V.list({ status: '未审核' })[0];
+  var rd = V.deleteVoucher(v.id);
+  t(!rd.ok && /无权限/.test(rd.reason), '会计删除凭证被拦截');
+  t(!!V.entriesOf(v.id).length, '被拦截的删除未执行（分录还在）');
+  /* 功能拦截：会计反结账被拒 */
+  var ru = FMClosing.unclose(LP, '测试反结账');
+  t(!ru.ok && /无权限/.test(ru.reason), '会计反结账被拦截');
+  /* 功能放行：会计可过账 */
+  tEq(V.audit(v.id, '李强').ok, true, '审核凭证成功');
+  tEq(V.post(v.id).ok, true, '会计过账放行');
+  /* 出纳 */
+  FMRoles.setRole('出纳');
+  tEq(FMRoles.can('post') || FMRoles.can('fileTax') || FMRoles.can('unclose'), false, '出纳三项敏感操作全部拒绝');
+  var rp = V.post(V.list({ status: '已审核' })[0].id);
+  t(!rp.ok && /无权限/.test(rp.reason), '出纳过账被拦截');
+  /* 审计只读 */
+  FMRoles.setRole('审计');
+  t(FMRoles.can('post') === false && FMRoles.can('unclose') === false &&
+    FMRoles.can('fileTax') === false && FMRoles.can('deleteVoucher') === false, '审计角色全部敏感操作拒绝');
+  /* 非法角色与恢复 */
+  t(!FMRoles.setRole('老板').ok, '未知角色拒绝');
+  tEq(FMRoles.setRole('管理员').ok, true, '切回管理员');
+})();
+
+/* ---------- 29. chunk 8：审计日志 ---------- */
+section('chunk 8 · 审计日志');
+S.seed();
+(function () {
+  /* 触发关键动作：过账 / 申报 / 切换角色 / 删除凭证 */
+  var v = V.list({ status: '未审核' })[0];
+  V.audit(v.id, '李强'); V.post(v.id);
+  FMTax.fileVAT(LP);
+  FMRoles.setRole('会计');
+  var vd = V.list({ status: '未审核' })[0];
+  FMRoles.setRole('管理员');
+  V.deleteVoucher(vd.id);
+  var all = FMAudit.query({});
+  t(all.length >= 6, '日志条数 ≥ 6（实际 ' + all.length + '）');
+  t(all[0].time >= all[all.length - 1].time, '按时间倒序排列');
+  tEq(FMAudit.query({ action: '凭证过账' }).length >= 1, true, '能查到过账记录');
+  tEq(FMAudit.query({ action: '增值税申报' }).length >= 1, true, '能查到申报记录');
+  tEq(FMAudit.query({ action: '切换角色' }).length >= 2, true, '能查到切换角色记录');
+  tEq(FMAudit.query({ action: '删除凭证' }).length, 1, '能查到删除凭证记录');
+  tEq(FMAudit.query({ user: '王丽' }).length, all.length, '按操作人筛选（单操作员种子全部为王丽）');
+  t(!FMAudit.query({ action: '不存在的动作' }).length, '无关鍵字不误报');
+  /* 申报/反结账等关键动作不留缺口：种子已有动作与 ACTIONS 清单对齐 */
+  t(FMAudit.ACTIONS.indexOf('凭证过账') >= 0 && FMAudit.ACTIONS.indexOf('反结账') >= 0 &&
+    FMAudit.ACTIONS.indexOf('恢复演示数据') >= 0 && FMAudit.ACTIONS.indexOf('切换角色') >= 0,
+    '关键动作清单含过账/反结账/恢复演示数据/切换角色');
+})();
+smoke(function () {
+  var el = { innerHTML: '', onclick: null };
+  FMAudit.renderAudit(el);
+  if (el.innerHTML.indexOf('审计日志') < 0 || el.innerHTML.indexOf('凭证过账') < 0) throw new Error('审计页内容缺失');
+}, 'renderAudit');
+
+/* ---------- 30. chunk 8：备份导出导入 ---------- */
+section('chunk 8 · 备份导出导入');
+S.seed();
+(function () {
+  var json = FMStore.exportBackup();
+  t(typeof json === 'string' && json.length > 1000, '导出返回 JSON 字符串（Node 无 Blob 不下载）');
+  var parsed = JSON.parse(json);
+  tEq(parsed.seedVersion, FMStore.SEED_VERSION, '导出含 seedVersion');
+  t(Array.isArray(parsed.accounts) && Array.isArray(parsed.vouchers) && Array.isArray(parsed.entries),
+    '导出含 accounts/vouchers/entries 三个数组');
+  /* 导入恢复：改坏后导回 */
+  S.get().accounts.filter(function (a) { return a.code === '1001'; })[0].opening = 555;
+  S.save();
+  var r1 = FMStore.importBackup(json);
+  tEq(r1.ok, true, '合法备份导入成功');
+  tEq(A.get('1001').opening, 3865000, '导入后 state 被替换（1001 期初回到 38,650.00）');
+  /* 结构 / 版本校验拒绝 */
+  t(!FMStore.importBackup('不是 json').ok, '非法 JSON 拒绝');
+  t(!FMStore.importBackup('[]').ok, '顶层数组拒绝');
+  t(!FMStore.importBackup('{"vouchers":[],"entries":[],"seedVersion":"' + FMStore.SEED_VERSION + '"}').ok, '缺 accounts 数组被拒绝');
+  t(!FMStore.importBackup('{"accounts":[],"entries":[],"seedVersion":"' + FMStore.SEED_VERSION + '"}').ok, '缺 vouchers 数组被拒绝');
+  t(!FMStore.importBackup('{"accounts":[],"vouchers":[],"entries":[]}').ok, '缺 seedVersion 被拒绝');
+  t(!FMStore.importBackup('{"seedVersion":"2000-01-01","accounts":[],"vouchers":[],"entries":[]}').ok, '种子版本不一致拒绝');
+  /* 导入前当前库备份到 fm_backup_manual */
+  var fake = {};
+  global.localStorage = {
+    getItem: function (k) { return Object.prototype.hasOwnProperty.call(fake, k) ? fake[k] : null; },
+    setItem: function (k, v) { fake[k] = String(v); },
+    removeItem: function (k) { delete fake[k]; }
+  };
+  S.seed();
+  var json2 = FMStore.exportBackup();
+  S.get().company.name = '改过的公司';
+  S.save();
+  var r2 = FMStore.importBackup(json2);
+  tEq(r2.ok, true, '第二次导入成功');
+  var bk = fake['fm_backup_manual'];
+  t(typeof bk === 'string' && bk.indexOf('改过的公司') >= 0, '导入前当前库已备份到 fm_backup_manual');
+  tEq(S.get().company.name, '演示科技有限公司', '导入后公司名还原');
+  delete global.localStorage;
+  S.seed();
 })();
 
 /* ---------- 汇总 ---------- */

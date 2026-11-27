@@ -222,6 +222,9 @@
   // 增值税及附加申报：应纳>0 → 借 22210104 转出未交 / 贷 222102；附加 → 借 5101 税金及附加 / 贷 222105-107
   function fileVAT(period) {
     period = period || currentPeriod();
+    /* chunk 8：角色权限拦截（出纳/审计不能申报） */
+    var rg = root.FMRoles ? root.FMRoles.guard('fileTax') : { ok: true };
+    if (!rg.ok) return fail(rg.reason);
     var g = baseGuards(period, '增值税');
     if (g) return g;
     if (findRecord('TAX-' + period + '-VAT')) return fail('本期增值税已申报，不能重复申报');
@@ -260,6 +263,9 @@
   // 企业所得税申报：借 6801 所得税费用 / 贷 222103
   function fileCIT(period) {
     period = period || currentPeriod();
+    /* chunk 8：角色权限拦截（出纳/审计不能申报） */
+    var rg = root.FMRoles ? root.FMRoles.guard('fileTax') : { ok: true };
+    if (!rg.ok) return fail(rg.reason);
     var g = baseGuards(period, '企业所得税');
     if (g) return g;
     if (findRecord('TAX-' + period + '-CIT')) return fail('本期企业所得税已申报，不能重复申报');

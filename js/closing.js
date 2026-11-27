@@ -178,7 +178,10 @@
   }
 
   // 反结账：只能反最近一个已结账期间；原因必填，写审计日志。
+  // chunk 8：反结账为敏感操作，会计/出纳/审计角色被 FMRoles 拦截（管理员专属）。
   function unclose(period, reason) {
+    var rg = root.FMRoles ? root.FMRoles.guard('unclose') : { ok: true };
+    if (!rg.ok) return fail(rg.reason);
     var cp = closedPeriods();
     if (!reason || !String(reason).trim()) return fail('反结账原因不能为空，请填写原因');
     if (cp.indexOf(period) < 0) return fail('会计期间 ' + period + ' 未结账，无需反结账');

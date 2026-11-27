@@ -11,8 +11,8 @@
   /* 种子数据版本：每次修改种子内容（期初余额 / 科目表 / 演示凭证等）都必须更新此值。
    * load() 发现已存数据的 seedVersion 与当前不同（含旧版无版本号）→ 旧库先备份到
    * fm_backup_<旧版本>，再整库按当前种子重建；版本相同则一字不动（用户数据优先）。 */
-  var SEED_VERSION = '2026-11-27';
-  var TOP_KEYS = ['company', 'periods', 'closedPeriods', 'accounts', 'vouchers', 'entries', 'departments', 'staff',
+  var SEED_VERSION = '2026-11-28';
+  var TOP_KEYS = ['company', 'periods', 'closedPeriods', 'currentRole', 'accounts', 'vouchers', 'entries', 'departments', 'staff',
     'customers', 'suppliers', 'taxRecords', 'assets', 'payrolls', 'invoices', 'budgets', 'bankStatements', 'auditLog'];
   var state = null;
   var memory = null; // 内存兜底
@@ -239,6 +239,41 @@
     return { vouchers: vouchers, entries: entries };
   }
 
+  /* chunk 8：发票种子。金额含税（分）；net/tax 由含税金额按税率倒算（与 invoices.js 同公式）。
+   * INV-0001/0002 已关联凭证（勾稽演示），INV-0003 未开票草稿，INV-0004 已开未入账（可作废演示）。 */
+  function seedInvoices() {
+    function make(id, no, type, partyId, date, amountYuan, rate, status, voucherId, summary) {
+      var amount = Y(amountYuan);
+      var net = Math.round(amount / (1 + rate));
+      return {
+        id: id, no: no, type: type, partyId: partyId, date: date, amount: amount, taxRate: rate,
+        net: net, tax: amount - net, status: status, voucherId: voucherId || '', summary: summary,
+        createdAt: date + 'T09:00:00.000Z'
+      };
+    }
+    return [
+      make('INV-2026-11-0001', '26337100', '销售', 'C001', '2026-11-03', '1356000.00', 0.13, '已开', '记-2026-11-0002', '销售商品给南京瑞丰（对应凭证 0002）'),
+      make('INV-2026-11-0002', '26337101', '采购', 'S001', '2026-11-02', '904000.00', 0.13, '已开', '记-2026-11-0001', '采购商品入库（对应凭证 0001）'),
+      make('INV-2026-11-0003', '', '销售', 'C004', '2026-11-22', '113000.00', 0.13, '未开', '', '杭州云帆订草（未开票）'),
+      make('INV-2026-11-0004', '26337102', '销售', 'C005', '2026-11-25', '11300.00', 0.13, '已开', '', '合肥安达零星销售（未入账）')
+    ];
+  }
+
+  /* chunk 8：预算种子。{dept, accountCode, year, monthly[12]}，dept 空串 = 不分部门；
+   * 管理费用 530101 / 销售费用 520101 / 制造费用 4101 每月 3 万 / 2.5 万 / 5 万（元）。 */
+  function seedBudgets() {
+    function monthly(yuan) {
+      var c = Y(yuan), arr = [];
+      for (var i = 0; i < 12; i++) arr.push(c);
+      return arr;
+    }
+    return [
+      { dept: '', accountCode: '530101', year: 2026, monthly: monthly('30000.00') },
+      { dept: '', accountCode: '520101', year: 2026, monthly: monthly('25000.00') },
+      { dept: '', accountCode: '4101', year: 2026, monthly: monthly('50000.00') }
+    ];
+  }
+
   function buildSeed() {
     var v = seedVouchers();
     var deptDefs = [['总经办', 4], ['财务部', 6], ['人力资源部', 4], ['行政部', 5], ['采购部', 6], ['仓储物流部', 14],
@@ -280,6 +315,7 @@
     }
     return {
       seedVersion: SEED_VERSION,
+      currentRole: '管理员', // chunk 8：当前角色（管理员/会计/出纳/审计），FMRoles 读写
       company: {
         name: '演示科技有限公司', taxpayerType: 'general', taxpayerTypeName: '一般纳税人', industry: '商贸',
         staffCount: 100, location: 'urban', creditCode: '91310115MA1DEMO26X', legalPerson: '周建国',
@@ -318,7 +354,8 @@
           { date: '2026-11-30', amount: 20000000, summary: '收到保证金退回' }
         ]
       },
-      taxRecords: [], assets: seedAssets(), payrolls: [], invoices: [], budgets: [], auditLog: []
+      taxRecords: [], assets: seedAssets(), payrolls: [],
+      invoices: seedInvoices(), budgets: seedBudgets(), auditLog: []
     };
   }
 
@@ -433,13 +470,16 @@
     return state;
   }
 
+  /* 恢复演示数据：清空本机库并按当前种子重建（供设置页按钮调用，管理员专属——拦截在 UI 层） */
   function reset() {
     var ls = storage();
     if (ls) {
       try { ls.removeItem(KEY); } catch (e) { /* 忽略 */ }
     }
     memory = null;
-    return seed();
+    var st = seed();
+    log('恢复演示数据', '', '按当前种子重建，种子版本 ' + SEED_VERSION);
+    return st;
   }
 
   function get(key) {
@@ -464,8 +504,63 @@
     if (state.auditLog.length > 5000) state.auditLog.splice(0, state.auditLog.length - 5000);
   }
 
+  /* ---------- 备份导出 / 导入（chunk 8） ---------- */
+
+  // 导出当前 state 的 JSON。浏览器里用 Blob 触发下载（finance-manager-backup-YYYYMMDD.json，
+  // 含 seedVersion）；Node（无 Blob/URL）退化为返回 JSON 字符串。
+  function exportBackup() {
+    if (!state) load();
+    var json = JSON.stringify(state);
+    var canDownload = typeof Blob === 'function' && typeof URL !== 'undefined' &&
+      typeof URL.createObjectURL === 'function' && typeof document !== 'undefined' &&
+      typeof document.createElement === 'function';
+    if (canDownload) {
+      try {
+        var d = new Date();
+        var stamp = d.getFullYear() + ('0' + (d.getMonth() + 1)).slice(-2) + ('0' + d.getDate()).slice(-2);
+        var blob = new Blob([json], { type: 'application/json' });
+        var a = document.createElement('a');
+        a.href = URL.createObjectURL(blob);
+        a.download = 'finance-manager-backup-' + stamp + '.json';
+        if (document.body) document.body.appendChild(a);
+        a.click();
+        if (a.parentNode) a.parentNode.removeChild(a);
+      } catch (e) { /* 下载失败仍返回字符串 */ }
+    }
+    return json;
+  }
+
+  // 导入备份 JSON：校验 seedVersion（必须存在且等于当前种子版本，否则导入后会被版本机制重建掉）
+  // 与结构（accounts/vouchers/entries 三个数组必须都在）；通过才先把当前库备份到
+  // localStorage 的 fm_backup_manual，再整库替换并 save()。
+  function importBackup(jsonText) {
+    var parsed = null;
+    try { parsed = JSON.parse(String(jsonText || '')); } catch (e) {
+      return { ok: false, reason: '备份文件不是合法的 JSON：' + (e && e.message) };
+    }
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed))
+      return { ok: false, reason: '备份文件结构不正确：顶层必须是对象' };
+    if (!parsed.seedVersion || typeof parsed.seedVersion !== 'string')
+      return { ok: false, reason: '备份缺少种子版本号（seedVersion），可能是过旧的导出文件' };
+    if (parsed.seedVersion !== SEED_VERSION)
+      return { ok: false, reason: '备份种子版本 ' + parsed.seedVersion + ' 与当前 ' + SEED_VERSION + ' 不一致，请先升级系统或用同版本备份恢复' };
+    var missing = ['accounts', 'vouchers', 'entries'].filter(function (k) { return !Array.isArray(parsed[k]); });
+    if (missing.length)
+      return { ok: false, reason: '备份缺少必要数据：' + missing.join('、') + '（需要数组）' };
+    if (!parsed.company || typeof parsed.company !== 'object')
+      return { ok: false, reason: '备份缺少公司信息（company）' };
+    var ls = storage();
+    if (ls) {
+      try { ls.setItem('fm_backup_manual', JSON.stringify(state)); } catch (e) { /* 备份失败仍可继续，内存里已有 */ }
+    }
+    state = parsed;
+    save();
+    log('导入备份', '', '种子版本 ' + parsed.seedVersion + '，凭证 ' + parsed.vouchers.length + ' 张');
+    return { ok: true, seedVersion: parsed.seedVersion };
+  }
+
   root.FMStore = {
     KEY: KEY, SEED_VERSION: SEED_VERSION, load: load, save: save, reset: reset, seed: seed, get: get, set: set, log: log,
-    toCents: toCents, fmt: fmt, esc: esc
+    toCents: toCents, fmt: fmt, esc: esc, exportBackup: exportBackup, importBackup: importBackup
   };
 })(typeof window !== 'undefined' ? window : globalThis);
