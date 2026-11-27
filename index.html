@@ -1,0 +1,152 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=1024">
+<title>财务管理系统 · 演示科技有限公司</title>
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+<div class="app">
+  <aside class="sidebar">
+    <div class="brand">财务管理系统</div>
+    <nav id="nav">
+      <div class="nav-group">总账</div>
+      <a href="#/dashboard" data-route="dashboard">看板</a>
+      <a href="#/vouchers" data-route="vouchers">凭证</a>
+      <a href="#/accounts" data-route="accounts">科目</a>
+      <a href="#/settings" data-route="settings">设置</a>
+      <div class="nav-group">待建模块</div>
+      <a href="#/gl" data-route="gl">总账 / 余额表 <span class="chunk-tag">chunk 2</span></a>
+      <a href="#/arap" data-route="arap">应收应付 <span class="chunk-tag">chunk 3</span></a>
+      <a href="#/cash" data-route="cash">出纳 / 银行 <span class="chunk-tag">chunk 3</span></a>
+      <a href="#/fixedassets" data-route="fixedassets">固定资产 <span class="chunk-tag">chunk 4</span></a>
+      <a href="#/payroll" data-route="payroll">薪酬工资 <span class="chunk-tag">chunk 5</span></a>
+      <a href="#/tax" data-route="tax">税务管理 <span class="chunk-tag">chunk 6</span></a>
+      <a href="#/reports" data-route="reports">财务报表 <span class="chunk-tag">chunk 7</span></a>
+      <a href="#/invoices" data-route="invoices">发票 <span class="chunk-tag">chunk 8</span></a>
+      <a href="#/budget" data-route="budget">预算 <span class="chunk-tag">chunk 8</span></a>
+      <a href="#/audit" data-route="audit">审计日志 <span class="chunk-tag">chunk 8</span></a>
+      <a href="#/users" data-route="users">操作员权限 <span class="chunk-tag">chunk 8</span></a>
+    </nav>
+    <div class="sidebar-foot">单机版 · 数据存本机</div>
+  </aside>
+  <div class="main">
+    <header class="topbar">
+      <div class="company" id="top-company">—</div>
+      <div class="period" id="top-period">—</div>
+    </header>
+    <main id="view" class="view"></main>
+  </div>
+</div>
+<div id="toast-box"></div>
+
+<script>
+/* 轻提示：FMToast(msg, 'ok'|'bad') */
+window.FMToast = function (msg, type) {
+  var box = document.getElementById('toast-box');
+  if (!box) return;
+  var d = document.createElement('div');
+  d.className = 'toast ' + (type === 'bad' ? 'toast-bad' : 'toast-ok');
+  d.textContent = msg;
+  box.appendChild(d);
+  setTimeout(function () {
+    d.classList.add('toast-out');
+    setTimeout(function () { if (d.parentNode) d.parentNode.removeChild(d); }, 300);
+  }, 2600);
+};
+</script>
+<script src="js/taxrules.js"></script>
+<script src="js/store.js"></script>
+<script src="js/accounts.js"></script>
+<script src="js/voucher.js"></script>
+<script src="js/dashboard.js"></script>
+<script>
+(function () {
+  'use strict';
+  var view = document.getElementById('view');
+
+  /* 设置页（chunk 1 内功能：公司信息 + 演示数据管理） */
+  function renderSettings(el) {
+    var c = FMStore.get('company') || {}, p = FMStore.get('periods') || { current: '' };
+    var esc = FMStore.esc;
+    el.innerHTML = '<div class="page-head"><h2>设置</h2></div>' +
+      '<h3 class="sec-title">公司信息</h3>' +
+      '<table class="form-table">' +
+      '<tr><th>公司名称</th><td>' + esc(c.name) + '</td><th>纳税人类型</th><td>' + esc(c.taxpayerTypeName) + '</td></tr>' +
+      '<tr><th>所属行业</th><td>' + esc(c.industry) + '</td><th>从业人数</th><td>' + (c.staffCount || '') + ' 人</td></tr>' +
+      '<tr><th>统一社会信用代码</th><td class="mono">' + esc(c.creditCode) + '</td><th>法定代表人</th><td>' + esc(c.legalPerson) + '</td></tr>' +
+      '<tr><th>会计准则</th><td>' + esc(c.accountingStandard) + '</td><th>当前操作员</th><td>' + esc(c.operator) + '</td></tr>' +
+      '<tr><th>启用期间</th><td>' + esc(c.startPeriod) + '</td><th>期初建账日期</th><td>' + esc(c.openingDate) + '</td></tr>' +
+      '<tr><th>当前会计期间</th><td>' + esc(p.current) + '（' + (p.list || []).filter(function (x) { return x.period === p.current; }).map(function (x) { return x.closed ? '已结账' : '未结账'; }).join('') + '）</td><th>城建税税率</th><td>' +
+      (c.location === 'urban' ? (FMTax.surtax.urban * 100).toFixed(0) + '%（市区）' : (FMTax.surtax.county * 100).toFixed(0) + '%（县城镇）') + '</td></tr>' +
+      '</table>' +
+      '<h3 class="sec-title">数据管理</h3>' +
+      '<p class="muted">数据保存在本机浏览器 localStorage（键 finance-manager-v1）。恢复演示数据会清空本机全部数据并重新写入种子数据，请先确认没有需要保留的录入。</p>' +
+      '<button class="btn btn-danger" id="btn-reset">恢复演示数据</button>' +
+      '<p class="muted" style="margin-top:12px">多用户权限管理将在 chunk 8 提供；单机版无多用户与远程访问，多用户需上服务器版。</p>';
+    document.getElementById('btn-reset').onclick = function () {
+      if (!window.confirm('确定恢复演示数据？本机现有数据将被清空。')) return;
+      FMStore.reset();
+      FMToast('已恢复演示数据', 'ok');
+      route();
+    };
+  }
+
+  /* 待建模块占位 */
+  var PLACEHOLDER = {
+    gl: ['总账 / 明细账 / 余额表 / 月结反结账 / 期初', 2],
+    arap: ['应收应付管理', 3],
+    cash: ['出纳 / 银行账户管理', 3],
+    fixedassets: ['固定资产', 4],
+    payroll: ['薪酬工资（含个税累计预扣法）', 5],
+    tax: ['税务管理（增值税 / 企税 / 附加税 / 申报表）', 6],
+    reports: ['财务报表（资产负债表 / 利润表 / 现金流量表）', 7],
+    invoices: ['发票管理', 8],
+    budget: ['预算管理', 8],
+    audit: ['审计日志', 8],
+    users: ['操作员与角色权限', 8]
+  };
+
+  function renderPlaceholder(route) {
+    var def = PLACEHOLDER[route] || ['该模块', '?'];
+    view.innerHTML = '<div class="placeholder"><div class="placeholder-icon">🚧</div>' +
+      '<h2>' + def[0] + '</h2><p class="muted">该模块属于 chunk ' + def[1] + '，待建。当前版本（chunk 1）不含此功能。</p>' +
+      '<a class="btn" href="#/dashboard">返回看板</a></div>';
+  }
+
+  /* 路由 */
+  function route() {
+    var hash = (location.hash || '#/dashboard').replace(/^#\/?/, '');
+    var parts = hash.split('/');
+    var head = parts[0] || 'dashboard';
+    // 顶部公司名 / 会计期间
+    var c = FMStore.get('company') || {}, p = FMStore.get('periods') || { current: '' };
+    document.getElementById('top-company').textContent = c.name || '财务管理系统';
+    document.getElementById('top-period').textContent = '会计期间：' + p.current + ' · 操作员：' + (c.operator || '');
+    // 导航高亮
+    var navKey = head.indexOf('voucher') === 0 ? 'vouchers' : head;
+    var links = document.querySelectorAll('#nav a[data-route]');
+    for (var i = 0; i < links.length; i++) {
+      links[i].classList.toggle('active', links[i].dataset.route === navKey && !PLACEHOLDER[navKey]);
+    }
+    // 分发
+    if (PLACEHOLDER[head]) { renderPlaceholder(head); return; }
+    if (head === 'dashboard') { FMDashboard.renderDashboard(view); return; }
+    if (head === 'vouchers') { FMVoucher.renderVouchers(view); return; }
+    if (head === 'voucher') {
+      FMVoucher.renderVoucherForm(view, parts[1] && parts[1] !== 'new' ? parts[1] : undefined);
+      return;
+    }
+    if (head === 'accounts') { FMAccounts.renderAccounts(view); return; }
+    if (head === 'settings') { renderSettings(view); return; }
+    renderPlaceholder(head);
+  }
+
+  FMStore.load();
+  window.addEventListener('hashchange', route);
+  route();
+})();
+</script>
+</body>
+</html>

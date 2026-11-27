@@ -1,0 +1,318 @@
+/* 财务管理系统 · 数据层
+ * window.FMStore = {load, save, reset, seed, get, set, log, toCents, fmt, esc}
+ * - localStorage 键 finance-manager-v1；localStorage 不可用（Node / 隐私模式）时退回内存。
+ * - 金额一律用“分”（整数）存储，显示时用 fmt() 转元。
+ * - get(key) 返回的是内存中的活引用，改完要调 save()（或直接用 set）。
+ */
+(function (root) {
+  'use strict';
+
+  var KEY = 'finance-manager-v1';
+  var TOP_KEYS = ['company', 'periods', 'accounts', 'vouchers', 'entries', 'departments', 'staff',
+    'customers', 'suppliers', 'taxRecords', 'assets', 'payrolls', 'invoices', 'budgets', 'auditLog'];
+  var state = null;
+  var memory = null; // 内存兜底
+
+  function storage() {
+    try {
+      if (root.localStorage && typeof root.localStorage.getItem === 'function') return root.localStorage;
+    } catch (e) { /* 被禁用 */ }
+    return null;
+  }
+
+  /* ---------- 金额工具：全程整数分，不做浮点运算 ---------- */
+
+  // '1,234.56' / 1234.56 / '￥-12.3' → 分（整数）；非法（含超过两位小数）返回 null
+  function toCents(v) {
+    if (v === null || v === undefined) return null;
+    var s = typeof v === 'number' ? (isFinite(v) ? v.toFixed(2) : '') : String(v);
+    s = s.replace(/[,，\s￥¥]/g, '');
+    if (s === '') return null;
+    var m = /^([+-])?(\d*)(?:\.(\d{0,2}))?$/.exec(s);
+    if (!m || (m[2] === '' && !m[3])) return null;
+    var cents = parseInt(m[2] || '0', 10) * 100 + parseInt(((m[3] || '') + '00').slice(0, 2), 10);
+    return m[1] === '-' ? -cents : cents;
+  }
+
+  // 分 → '1,234.56'
+  function fmt(cents) {
+    cents = Math.round(Number(cents) || 0);
+    var neg = cents < 0;
+    var abs = Math.abs(cents);
+    var yuan = String(Math.floor(abs / 100)).replace(/\B(?=(\d{3})+(?!\d))/g, ',');
+    var fen = ('0' + (abs % 100)).slice(-2);
+    return (neg ? '-' : '') + yuan + '.' + fen;
+  }
+
+  function esc(s) {
+    return String(s === null || s === undefined ? '' : s).replace(/[&<>"']/g, function (c) {
+      return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c];
+    });
+  }
+
+  /* ---------- 种子数据 ---------- */
+
+  function Y(s) { return toCents(s); }
+
+  // 期初余额（2026-10-31，按科目自身余额方向，单位元）。借方合计 = 贷方合计 = 20,327,350.50
+  var OPENING = {
+    '1001': '38650.00',
+    '100201': '4862300.50',
+    '100202': '1250000.00',
+    '1121': '300000.00',
+    '1122': '3268400.00',
+    '1123': '180000.00',
+    '1221': '56000.00',
+    '1231': '163420.00',
+    '1405': '5640000.00',
+    '1411': '42000.00',
+    '1601': '3850000.00',
+    '1602': '1126500.00',
+    '1701': '480000.00',
+    '1702': '144000.00',
+    '1801': '360000.00',
+    '2001': '2000000.00',
+    '2202': '2845600.00',
+    '2203': '220000.00',
+    '221101': '986000.00',
+    '221102': '268400.00',
+    '221103': '98600.00',
+    '222102': '186500.00',
+    '222103': '142000.00',
+    '222104': '23650.00',
+    '222105': '13055.00',
+    '222106': '5595.00',
+    '222107': '3730.00',
+    '2231': '7250.00',
+    '2241': '85000.00',
+    '3001': '10000000.00',
+    '3002': '500000.00',
+    '310101': '386000.00',
+    '3103': '685200.00',
+    '310405': '436850.50'
+  };
+
+  // 往来科目期初余额按辅助项的明细（合计 = 科目期初）
+  var OPENING_AUX = {
+    '1122': [['customer', 'C001', '820000.00'], ['customer', 'C002', '1150000.00'], ['customer', 'C003', '368400.00'],
+      ['customer', 'C004', '530000.00'], ['customer', 'C005', '400000.00']],
+    '1121': [['customer', 'C006', '300000.00']],
+    '1123': [['supplier', 'S005', '180000.00']],
+    '1221': [['staff', 'E008', '30000.00'], ['staff', 'E012', '26000.00']],
+    '2202': [['supplier', 'S001', '960000.00'], ['supplier', 'S002', '1085600.00'], ['supplier', 'S003', '500000.00'],
+      ['supplier', 'S004', '300000.00']],
+    '2203': [['customer', 'C007', '220000.00']]
+  };
+
+  function seedAccounts() {
+    var chart = root.FMAccounts && root.FMAccounts.defaultChart ? root.FMAccounts.defaultChart() : [];
+    return chart.map(function (a) {
+      a.opening = OPENING[a.code] ? Y(OPENING[a.code]) : 0;
+      if (OPENING_AUX[a.code]) {
+        a.openingAux = OPENING_AUX[a.code].map(function (r) {
+          var o = { amount: Y(r[2]) };
+          o[r[0]] = r[1];
+          return o;
+        });
+      }
+      return a;
+    });
+  }
+
+  function seedVouchers() {
+    // 增值税额按 js/taxrules.js 的税率计算，不在这里硬编码税率
+    var rates = (root.FMTax && root.FMTax.vat && root.FMTax.vat.generalRates) || {};
+    function tax(cents, category) { return Math.round(cents * (rates[category] || 0)); }
+
+    var buy = Y('800000.00'), sale1 = Y('1200000.00'), sale2 = Y('450000.00'), rent = Y('60000.00');
+    var MAKER = '王丽', AUDITOR = '李强';
+    var defs = [
+      ['2026-11-02', '采购商品一批入库（华东电子）', '已过账', 2, [
+        ['1405', '采购商品入库', buy, 0],
+        ['22210101', '采购进项税额', tax(buy, 'goods'), 0],
+        ['2202', '应付华东电子货款', 0, buy + tax(buy, 'goods'), { supplier: 'S001' }]]],
+      ['2026-11-03', '销售商品给上海明远贸易', '已过账', 2, [
+        ['1122', '应收明远贸易货款', sale1 + tax(sale1, 'goods'), 0, { customer: 'C001' }],
+        ['600101', '商品销售收入', 0, sale1],
+        ['22210102', '销售销项税额', 0, tax(sale1, 'goods')]]],
+      ['2026-11-05', '收到杭州嘉禾商贸货款', '已过账', 1, [
+        ['100201', '收嘉禾商贸货款', Y('650000.00'), 0],
+        ['1122', '收嘉禾商贸货款', 0, Y('650000.00'), { customer: 'C002' }]]],
+      ['2026-11-06', '支付苏州恒润供应链货款', '已过账', 1, [
+        ['2202', '付恒润供应链货款', Y('480000.00'), 0, { supplier: 'S002' }],
+        ['100201', '付恒润供应链货款', 0, Y('480000.00')]]],
+      ['2026-11-10', '发放 10 月工资', '已过账', 1, [
+        ['221101', '发放 10 月工资', Y('986000.00'), 0],
+        ['100201', '银行代发工资', 0, Y('852400.00')],
+        ['2241', '代扣个人社保公积金', 0, Y('111800.00')],
+        ['222104', '代扣 10 月个人所得税', 0, Y('21800.00')]]],
+      ['2026-11-12', '缴纳 10 月增值税及附加、个税', '已过账', 3, [
+        ['222102', '缴纳 10 月增值税', Y('186500.00'), 0],
+        ['222105', '缴纳 10 月城建税', Y('13055.00'), 0],
+        ['222106', '缴纳 10 月教育费附加', Y('5595.00'), 0],
+        ['222107', '缴纳 10 月地方教育附加', Y('3730.00'), 0],
+        ['222104', '缴纳 9 月代扣个税', Y('23650.00'), 0],
+        ['100201', '银行扣缴税费', 0, Y('232530.00')]]],
+      ['2026-11-15', '支付 11 月办公室租金', '已审核', 2, [
+        ['530103', '11 月办公室租金', rent, 0, { dept: 'D04' }],
+        ['22210101', '租金进项税额', tax(rent, 'transport'), 0],
+        ['100201', '付办公室租金', 0, rent + tax(rent, 'transport')]]],
+      ['2026-11-18', '销售一部报销差旅费', '已审核', 5, [
+        ['520103', '赵磊报销广州出差差旅费', Y('8650.40'), 0, { dept: 'D08' }],
+        ['1001', '现金支付差旅报销', 0, Y('8650.40')]]],
+      ['2026-11-20', '销售商品给南京瑞丰科技（款已收）', '已审核', 2, [
+        ['100201', '收瑞丰科技货款', sale2 + tax(sale2, 'goods'), 0],
+        ['600101', '商品销售收入', 0, sale2],
+        ['22210102', '销售销项税额', 0, tax(sale2, 'goods')]]],
+      ['2026-11-21', '支付短期借款利息', '未审核', 1, [
+        ['2231', '冲 10 月已计提利息', Y('7250.00'), 0],
+        ['540101', '11 月借款利息', Y('7250.00'), 0],
+        ['100202', '建行扣收借款利息', 0, Y('14500.00')]]],
+      ['2026-11-30', '计提 11 月工资', '未审核', 1, [
+        ['520101', '销售一部工资', Y('150000.00'), 0, { dept: 'D08' }],
+        ['520101', '销售二部工资', Y('130000.00'), 0, { dept: 'D09' }],
+        ['520101', '市场部工资', Y('80000.00'), 0, { dept: 'D10' }],
+        ['520101', '客服部工资', Y('60000.00'), 0, { dept: 'D11' }],
+        ['530101', '总经办工资', Y('96000.00'), 0, { dept: 'D01' }],
+        ['530101', '财务部工资', Y('88000.00'), 0, { dept: 'D02' }],
+        ['530101', '人力资源部工资', Y('64000.00'), 0, { dept: 'D03' }],
+        ['530101', '行政部工资', Y('72000.00'), 0, { dept: 'D04' }],
+        ['530101', '采购部工资', Y('78000.00'), 0, { dept: 'D05' }],
+        ['530101', '仓储物流部工资', Y('124000.00'), 0, { dept: 'D06' }],
+        ['530101', '信息技术部工资', Y('28000.00'), 0, { dept: 'D07' }],
+        ['530101', '审计法务部工资', Y('22000.00'), 0, { dept: 'D12' }],
+        ['221101', '计提 11 月应付工资', 0, Y('992000.00')]]],
+      ['2026-11-30', '结转本月销售成本', '未审核', 1, [
+        ['5001', '结转本月销售成本', Y('1155000.00'), 0],
+        ['1405', '结转本月销售成本', 0, Y('1155000.00')]]]
+    ];
+
+    var vouchers = [], entries = [];
+    defs.forEach(function (d, i) {
+      var id = '记-2026-11-' + ('000' + (i + 1)).slice(-4);
+      vouchers.push({
+        id: id, date: d[0], period: '2026-11', summary: d[1], status: d[2],
+        maker: MAKER, auditor: d[2] === '未审核' ? '' : AUDITOR, attachCount: d[3],
+        createdAt: d[0] + 'T09:00:00.000Z'
+      });
+      d[4].forEach(function (l, j) {
+        entries.push({
+          id: id + '-' + (j + 1), voucherId: id, line: j + 1,
+          accountCode: l[0], summary: l[1], debit: l[2], credit: l[3], aux: l[4] || {}
+        });
+      });
+    });
+    return { vouchers: vouchers, entries: entries };
+  }
+
+  function seed() {
+    var v = seedVouchers();
+    var deptDefs = [['总经办', 4], ['财务部', 6], ['人力资源部', 4], ['行政部', 5], ['采购部', 6], ['仓储物流部', 14],
+      ['信息技术部', 4], ['销售一部', 18], ['销售二部', 16], ['市场部', 8], ['客服部', 10], ['审计法务部', 5]];
+    var staffDefs = [['周建国', 'D01', '总经理'], ['吴敏', 'D01', '总经理助理'], ['李强', 'D02', '财务经理'], ['王丽', 'D02', '总账会计'],
+      ['陈静', 'D02', '出纳'], ['刘洋', 'D03', '人力资源经理'], ['孙倩', 'D04', '行政主管'], ['赵磊', 'D08', '销售经理'],
+      ['钱芳', 'D08', '销售代表'], ['郑浩', 'D09', '销售经理'], ['冯雪', 'D09', '销售代表'], ['褚卫东', 'D05', '采购经理'],
+      ['蒋琳', 'D05', '采购专员'], ['沈涛', 'D06', '仓储主管'], ['韩梅', 'D06', '物流专员'], ['杨帆', 'D07', '信息主管'],
+      ['朱婷', 'D10', '市场经理'], ['秦朗', 'D11', '客服主管'], ['许晴', 'D12', '法务专员'], ['何军', 'D12', '内审专员']];
+    var custDefs = ['上海明远贸易有限公司', '杭州嘉禾商贸有限公司', '南京瑞丰科技有限公司', '苏州新辰电器有限公司',
+      '宁波海通进出口有限公司', '无锡恒业机电有限公司', '合肥智联信息技术有限公司', '武汉江城百货有限公司',
+      '成都蜀韵商业连锁有限公司', '广州粤海数码有限公司'];
+    var supDefs = ['华东电子元器件有限公司', '苏州恒润供应链有限公司', '深圳鹏程电子科技有限公司', '东莞精工制造有限公司',
+      '上海联运物流有限公司', '杭州云栖办公用品有限公司', '北京中科软件有限公司', '青岛海润包装材料有限公司',
+      '厦门鹭岛国际货运代理有限公司', '上海浦江物业管理有限公司'];
+    function party(prefix, base) {
+      return function (name, i) {
+        var n = ('00' + (i + 1)).slice(-3);
+        return {
+          id: prefix + n, name: name, taxNo: '9131' + base + n + '00' + ((i * 7 + 3) % 10) + 'X',
+          contact: '', phone: '021-5' + base.slice(0, 3) + '0' + n, creditDays: 30 + (i % 3) * 15
+        };
+      };
+    }
+    state = {
+      company: {
+        name: '演示科技有限公司', taxpayerType: 'general', taxpayerTypeName: '一般纳税人', industry: '商贸',
+        staffCount: 100, location: 'urban', creditCode: '91310115MA1DEMO26X', legalPerson: '周建国',
+        accountingStandard: '企业会计准则', startPeriod: '2026-11', openingDate: '2026-10-31', operator: '王丽'
+      },
+      periods: {
+        current: '2026-11',
+        list: [{ period: '2026-10', closed: true }, { period: '2026-11', closed: false }]
+      },
+      accounts: seedAccounts(),
+      vouchers: v.vouchers,
+      entries: v.entries,
+      departments: deptDefs.map(function (d, i) { return { id: 'D' + ('0' + (i + 1)).slice(-2), name: d[0], headcount: d[1] }; }),
+      staff: staffDefs.map(function (s, i) { return { id: 'E' + ('00' + (i + 1)).slice(-3), name: s[0], dept: s[1], title: s[2] }; }),
+      customers: custDefs.map(party('C', '0105')),
+      suppliers: supDefs.map(party('S', '0206')),
+      taxRecords: [], assets: [], payrolls: [], invoices: [], budgets: [], auditLog: []
+    };
+    save();
+    return state;
+  }
+
+  /* ---------- 读写 ---------- */
+
+  function save() {
+    var raw = JSON.stringify(state);
+    memory = raw;
+    var ls = storage();
+    if (ls) {
+      try { ls.setItem(KEY, raw); } catch (e) { /* 配额满或被禁用：仅保留在内存 */ }
+    }
+    return true;
+  }
+
+  function load() {
+    var raw = null, ls = storage();
+    if (ls) {
+      try { raw = ls.getItem(KEY); } catch (e) { raw = null; }
+    }
+    if (!raw) raw = memory;
+    var parsed = null;
+    if (raw) {
+      try { parsed = JSON.parse(raw); } catch (e) { parsed = null; }
+    }
+    if (!parsed || typeof parsed !== 'object' || !parsed.company || !Array.isArray(parsed.accounts)) return seed();
+    state = parsed;
+    TOP_KEYS.forEach(function (k) { if (state[k] === undefined) state[k] = []; });
+    return state;
+  }
+
+  function reset() {
+    var ls = storage();
+    if (ls) {
+      try { ls.removeItem(KEY); } catch (e) { /* 忽略 */ }
+    }
+    memory = null;
+    return seed();
+  }
+
+  function get(key) {
+    if (!state) load();
+    return key ? state[key] : state;
+  }
+
+  function set(key, value) {
+    if (!state) load();
+    state[key] = value;
+    save();
+    return value;
+  }
+
+  // 写一条操作日志（chunk 8 的审计日志页面读它）
+  function log(action, target, detail) {
+    if (!state) load();
+    state.auditLog.push({
+      time: new Date().toISOString(), user: (state.company && state.company.operator) || '',
+      action: action, target: target || '', detail: detail || ''
+    });
+    if (state.auditLog.length > 5000) state.auditLog.splice(0, state.auditLog.length - 5000);
+  }
+
+  root.FMStore = {
+    KEY: KEY, load: load, save: save, reset: reset, seed: seed, get: get, set: set, log: log,
+    toCents: toCents, fmt: fmt, esc: esc
+  };
+})(typeof window !== 'undefined' ? window : globalThis);
