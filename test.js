@@ -1847,8 +1847,8 @@ S.seed();
 /* ---------- 25. chunk 7 修正：种子版本（SEED_VERSION）与旧数据重建 ---------- */
 section('chunk 7 修正 · 种子版本与旧数据重建');
 S.seed();
-t(typeof FMStore.SEED_VERSION === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(FMStore.SEED_VERSION), 'FMStore.SEED_VERSION 为日期格式字符串常量');
-tEq(FMStore.SEED_VERSION, '2026-11-28', 'SEED_VERSION = 2026-11-28');
+t(typeof FMStore.SEED_VERSION === 'string' && /^\d{4}-\d{2}-\d{2}[a-z]?$/.test(FMStore.SEED_VERSION), 'FMStore.SEED_VERSION 为日期格式字符串常量（允许字母后缀）');
+tEq(FMStore.SEED_VERSION, '2026-11-28b', 'SEED_VERSION = 2026-11-28b');
 tEq(S.get().seedVersion, FMStore.SEED_VERSION, 'seed() 把当前种子版本写入 state.seedVersion');
 /* 版本相同：load() 不重建，用户改动保留 */
 (function () {
@@ -1973,6 +1973,14 @@ smoke(function () {
   FMBudget.renderBudget(el);
   if (el.innerHTML.indexOf('预算管理') < 0 || el.innerHTML.indexOf('超支') < 0) throw new Error('预算页内容缺失');
 }, 'renderBudget');
+/* 科目完整名称：520101/530101 都叫“职工薪酬”，页面必须能区分（fullName 含父级名） */
+t(A.fullName('520101').indexOf('销售费用') === 0, 'fullName(520101) = 销售费用-职工薪酬');
+t(A.fullName('530101').indexOf('管理费用') === 0, 'fullName(530101) = 管理费用-职工薪酬');
+smoke(function () {
+  var el = { innerHTML: '', onclick: null };
+  FMBudget.renderBudget(el);
+  if (el.innerHTML.indexOf('销售费用') < 0 || el.innerHTML.indexOf('管理费用') < 0) throw new Error('科目名称未区分（缺父级名）');
+}, 'renderBudget（科目完整名称可区分）');
 
 /* ---------- 28. chunk 8：角色权限 ---------- */
 section('chunk 8 · 角色权限');
@@ -2018,6 +2026,16 @@ S.seed();
 /* ---------- 29. chunk 8：审计日志 ---------- */
 section('chunk 8 · 审计日志');
 S.seed();
+/* 种子日志：按凭证历史补齐，全新打开审计页有历史可看 */
+t(S.get('auditLog').length >= 8, '种子日志 ≥ 8 条（实际 ' + S.get('auditLog').length + ' 条）');
+(function () {
+  var first = S.get('auditLog')[0];
+  tEq(first.action + ' ' + first.target, '新建凭证 记-2026-11-0001', '第一条是 0001 的新建记录');
+  t(String(first.time).indexOf('2026-11-02') === 0, '种子日志时间用凭证日期（2026-11-02）');
+  tEq(first.user, '王丽', '种子日志操作人王丽');
+  t(['time', 'user', 'action', 'target', 'detail'].every(function (k) { return k in first; }),
+    '种子日志字段与 S().log() 一致（time/user/action/target/detail）');
+})();
 (function () {
   /* 触发关键动作：过账 / 申报 / 切换角色 / 删除凭证 */
   var v = V.list({ status: '未审核' })[0];
@@ -2028,7 +2046,8 @@ S.seed();
   FMRoles.setRole('管理员');
   V.deleteVoucher(vd.id);
   var all = FMAudit.query({});
-  t(all.length >= 6, '日志条数 ≥ 6（实际 ' + all.length + '）');
+  t(all.length >= 8, 'query({}) 能查到全部（含种子，实际 ' + all.length + ' 条）');
+  tEq(FMAudit.query({ action: '新建凭证' }).length >= 6, true, '按动作筛选“新建凭证” ≥ 6 条（含种子）');
   t(all[0].time >= all[all.length - 1].time, '按时间倒序排列');
   tEq(FMAudit.query({ action: '凭证过账' }).length >= 1, true, '能查到过账记录');
   tEq(FMAudit.query({ action: '增值税申报' }).length >= 1, true, '能查到申报记录');

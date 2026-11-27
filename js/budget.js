@@ -113,6 +113,18 @@
 
   var B = { year: 0 };
 
+  // 科目完整名称（显示用）：优先 FMAccounts.fullName（如“销售费用-职工薪酬”），
+  // 不可用则自己拼“父科目名-末级科目名”。只改显示，不影响预算口径与计算。
+  function accFullName(code) {
+    var a = A().get(code);
+    if (!a) return code;
+    if (typeof A().fullName === 'function') {
+      try { return A().fullName(code); } catch (e) { /* 拼接兑底 */ }
+    }
+    var p = a.parent ? A().get(a.parent) : null;
+    return (p ? p.name + '-' : '') + a.name;
+  }
+
   function renderBudget(el) {
     var esc = S().esc, fmt = S().fmt;
     var period = currentPeriod();
@@ -132,9 +144,9 @@
     rows.forEach(function (b) {
       var vb = actualVsBudget(period, b.dept, b.accountCode);
       var annual = b.monthly.reduce(function (s, c) { return s + c; }, 0);
-      var acc = A().get(b.accountCode) || { name: b.accountCode };
+      var accName = accFullName(b.accountCode);
       html += '<tr><td>' + esc(deptName(b.dept) || '（全部部门）') + '</td><td class="mono">' + esc(b.accountCode) + '</td>' +
-        '<td>' + esc(acc.name) + '</td><td class="num">' + fmt(annual) + '</td>' +
+        '<td>' + esc(accName) + '</td><td class="num">' + fmt(annual) + '</td>' +
         '<td class="num">' + (vb.hasBudget ? fmt(vb.budget) : '<span class="muted">未设</span>') + '</td>' +
         '<td class="num' + (vb.over ? ' bad-text' : '') + '">' + fmt(vb.actual) + '</td>' +
         '<td class="num">' + (vb.hasBudget ? fmt(vb.diff) : '') + '</td>' +
@@ -152,7 +164,7 @@
       '<tr><th>部门</th><td><select id="fm-bud-dept" class="input" style="width:180px"><option value="">（全部部门）</option>' +
       depts.map(function (d) { return '<option value="' + d.id + '">' + esc(d.name) + '</option>'; }).join('') + '</select></td>' +
       '<th>费用科目</th><td><select id="fm-bud-acc" class="input" style="width:240px">' +
-      accOptions.map(function (a) { return '<option value="' + a.code + '">' + a.code + ' ' + esc(a.name) + '</option>'; }).join('') + '</select></td></tr>' +
+      accOptions.map(function (a) { return '<option value="' + a.code + '">' + a.code + ' ' + esc(accFullName(a.code)) + '</option>'; }).join('') + '</select></td></tr>' +
       '<tr><th>年度</th><td><input id="fm-bud-yr" class="input" style="width:90px" value="' + B.year + '"></td>' +
       '<th>月预算（元）</th><td><input id="fm-bud-amt" class="input num" style="width:120px" placeholder="30000.00"> ' +
       '<button class="btn btn-primary" data-action="save">保存预算</button></td></tr></table>';

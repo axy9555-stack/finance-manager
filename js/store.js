@@ -11,7 +11,7 @@
   /* 种子数据版本：每次修改种子内容（期初余额 / 科目表 / 演示凭证等）都必须更新此值。
    * load() 发现已存数据的 seedVersion 与当前不同（含旧版无版本号）→ 旧库先备份到
    * fm_backup_<旧版本>，再整库按当前种子重建；版本相同则一字不动（用户数据优先）。 */
-  var SEED_VERSION = '2026-11-28';
+  var SEED_VERSION = '2026-11-28b';
   var TOP_KEYS = ['company', 'periods', 'closedPeriods', 'currentRole', 'accounts', 'vouchers', 'entries', 'departments', 'staff',
     'customers', 'suppliers', 'taxRecords', 'assets', 'payrolls', 'invoices', 'budgets', 'bankStatements', 'auditLog'];
   var state = null;
@@ -274,6 +274,26 @@
     ];
   }
 
+  /* chunk 8：审计日志种子。按种子凭证的历史补 10 条，时间用对应凭证日期（与 S().log 字段格式
+   * 一致：time/user/action/target/detail），操作人都是王丽；让全新打开的审计日志页有历史可看。 */
+  function seedAuditLog() {
+    function e(date, action, target, detail) {
+      return { time: date + 'T09:00:00.000Z', user: '王丽', action: action, target: target, detail: detail };
+    }
+    return [
+      e('2026-11-02', '新建凭证', '记-2026-11-0001', '采购商品一批入库（华东电子）'),
+      e('2026-11-03', '新建凭证', '记-2026-11-0002', '销售商品给南京瑞丰科技'),
+      e('2026-11-05', '新建凭证', '记-2026-11-0003', '收到上海华东电子货款'),
+      e('2026-11-06', '新建凭证', '记-2026-11-0004', '支付深圳科创电子货款'),
+      e('2026-11-10', '新建凭证', '记-2026-11-0005', '发放 10 月工资'),
+      e('2026-11-10', '发放工资', '记-2026-11-0005', '应发 986,000.00，银行代发实发 852,400.00（代扣社保公积金/个税）'),
+      e('2026-11-12', '新建凭证', '记-2026-11-0006', '缴纳 10 月增值税及附加、个税'),
+      e('2026-11-15', '审核凭证', '记-2026-11-0007', '11 月办公室租金，审核人：李强'),
+      e('2026-11-18', '审核凭证', '记-2026-11-0008', '销售一部差旅报销，审核人：李强'),
+      e('2026-11-20', '审核凭证', '记-2026-11-0009', '销售商品给南京瑞丰（款已收），审核人：李强')
+    ];
+  }
+
   function buildSeed() {
     var v = seedVouchers();
     var deptDefs = [['总经办', 4], ['财务部', 6], ['人力资源部', 4], ['行政部', 5], ['采购部', 6], ['仓储物流部', 14],
@@ -355,7 +375,7 @@
         ]
       },
       taxRecords: [], assets: seedAssets(), payrolls: [],
-      invoices: seedInvoices(), budgets: seedBudgets(), auditLog: []
+      invoices: seedInvoices(), budgets: seedBudgets(), auditLog: seedAuditLog()
     };
   }
 
