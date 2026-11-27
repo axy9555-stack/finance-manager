@@ -1592,6 +1592,9 @@ S.seed();
 /* ---------- 24. chunk 7：财务报表 ---------- */
 section('chunk 7 · 财务报表');
 S.seed();
+/* pnlNet 口径（fresh seed）：收入 1,200,000、无费用 → 未结转利润 = 1,200,000.00 */
+tEq(FMReports.balanceSheet(LP).pnlNet, 120000000, 'fresh seed pnlNet = 1,200,000.00（未结转利润，含 4101 期间费用口径）');
+tEq(FMReports.balanceSheet(LP).balanced, true, 'fresh seed 资产负债表平衡');
 /* 演示场景：种子剩余 6 张凭证全部过账 → 折旧 → 工资计提+发放 → 增值税申报+缴款
  * → 企税申报（利润为负时税额 0）→ 结转损益，然后跑三张表。 */
 (function () {
@@ -1608,6 +1611,14 @@ var fv7 = FMTax.fileVAT(LP);
 tEq(fv7.ok && fv7.record.amount > 0, true, '申报增值税（应纳 > 0，' + S.fmt(fv7.ok ? fv7.record.amount : 0) + '）');
 var pv7 = FMTax.payTax('TAX-' + LP + '-VAT');
 tEq(pv7.ok, true, '缴纳增值税及附加成功');
+/* 结转前：pnlNet 与利润表利润总额必须一致（4101 期间费用口径统一） */
+(function () {
+  var bm = FMReports.balanceSheet(LP), im = FMReports.incomeStatement(LP);
+  tEq(bm.pnlNet, im.profitBeforeTax, '结转前 pnlNet === 利润表利润总额（4101 口径统一）');
+  tEq(bm.assets.filter(function (l) { return l.label === '在产品及成本类科目'; })[0].amount, 0,
+    '在产品及成本类科目行 = 0（4101 不再列资产）');
+  tEq(bm.diff, 0, '结转前资产负债表平衡（diff 0）');
+})();
 tEq(FMTax.fileCIT(LP).ok, true, '申报企业所得税成功（利润为负税额 0）');
 tEq(FMClosing.carryForward(LP).ok, true, '结转 11 月损益成功');
 
@@ -1646,19 +1657,22 @@ tEq(bs7.assets[0].amount, A.balance('1001', LP) + A.balance('1002', LP), '货币
 tEq(bs7.assets.filter(function (l) { return l.label === '应收账款'; })[0].amount, A.balance('1122', LP), '应收账款 = 1122');
 tEq(bs7.assets.filter(function (l) { return l.label === '固定资产净值'; })[0].amount,
   A.balance('1601', LP) - A.balance('1602', LP), '固定资产净值 = 1601 − 1602');
-tEq(bs7.pnlNet, 0, '结转后未结转损益净额为 0');
+tEq(bs7.pnlNet, -A.balance('4101', LP),
+  '结转后 pnlNet = −4101 余额（损益已清零，制造费用不结转，按期间费用留在权益外）');
 tEq(bs7.equity[3].label, '未分配利润', '权益第四行是未分配利润');
-tEq(bs7.equity[3].amount, A.balance('3103', LP) + A.balance('310405', LP),
-  '未分配利润 = 3103 本年利润 + 3104-未分配利润 310405 期末余额');
-tEq(bs7.totalEquity, leafSum7('所有者权益', LP), '权益合计 = 全部权益末级余额之和（独立复算）');
+tEq(bs7.equity[3].amount, A.balance('3103', LP) + A.balance('310405', LP) - A.balance('4101', LP),
+  '未分配利润 = 3103 + 310405 − 制造费用余额（4101 期间费用口径）');
+tEq(bs7.totalEquity, leafSum7('所有者权益', LP) + bs7.pnlNet,
+  '权益合计 = 权益末级余额之和 + pnlNet（独立复算）');
 (function () {
-  // 独立复算：借向资产末级余额 + 成本类末级余额 − 贷向（减值/折旧/坏账）资产末级余额
+  // 独立复算：借向资产末级余额 + 成本类（4001/4301/4401）末级余额 − 贷向（减值/折旧/坏账）资产末级余额。
+  // 4101 制造费用不在资产侧：它是生产部门期间费用（chunk 4/5 口径），进 pnlNet（权益侧）。
   var sum = 0;
   A.leaves().forEach(function (a) {
     if (a.category === '资产') sum += a.direction === '借' ? A.balance(a.code, LP) : -A.balance(a.code, LP);
-    else if (a.category === '成本') sum += A.balance(a.code, LP);
+    else if (a.category === '成本' && a.code !== '4101') sum += A.balance(a.code, LP);
   });
-  tEq(bs7.totalAssets, sum, '资产总计 = 借向资产 + 成本类 − 贷向减项（独立复算）');
+  tEq(bs7.totalAssets, sum, '资产总计 = 借向资产 + 成本类（不含 4101）− 贷向减项（独立复算）');
 })();
 (function () {
   var sum = 0;
@@ -1782,6 +1796,22 @@ smoke(function () {
   if (exported.indexOf('资产负债表') < 0) throw new Error('导出提示缺失');
 }, 'renderReports（导出 CSV 触发下载/字符串）');
 
+/* —— pnlNet 与利润表口径一致（4101 期间费用，chunk 6 同环境：fresh seed + 折旧 + 工资 + 增值税申报） —— */
+section('chunk 7 修正 · pnlNet 口径（4101 期间费用）');
+S.seed();
+(function () {
+  tEq(FMAssets.runDepreciation(LP).ok, true, '计提折旧成功');
+  tEq(FMPayroll.accrue(LP).ok && FMPayroll.pay(LP).ok, true, '工资计提+发放成功');
+  tEq(FMTax.fileVAT(LP).ok, true, '增值税申报成功（附加计入 5101）');
+  var b = FMReports.balanceSheet(LP), i = FMReports.incomeStatement(LP);
+  tEq(b.pnlNet, 74627200, 'pnlNet = 746,272.00（收入 1,200,000 − 折旧 56,500 − 工资社保公积金 394,108 − 附加 3,120）');
+  tEq(i.profitBeforeTax, 74627200, '利润表利润总额 = 746,272.00');
+  tEq(b.pnlNet, i.profitBeforeTax, 'pnlNet === 利润总额（两边口径一致，不再差 41,810）');
+  tEq(b.assets.filter(function (l) { return l.label === '在产品及成本类科目'; })[0].amount, 0,
+    '在产品及成本类科目行 = 0（4001/4301/4401 均无余额）');
+  tEq(b.diff, 0, '资产负债表仍平衡（diff === 0）');
+})();
+
 /* —— 所得税非零情形：fresh seed 直接申报企税 —— */
 section('chunk 7 · 利润表（所得税非零情形）');
 S.seed();
@@ -1812,6 +1842,44 @@ S.seed();
   tEq(FMReports.cashFlow(LP).netIncrease, cf0.netIncrease, '已审核未过账凭证不进现金流量表（净额不变）');
   V.post(r.id);
   tEq(FMReports.incomeStatement(LP).revenue, is0.revenue + 5000000, '过账后进入利润表（+50,000）');
+})();
+
+/* ---------- 25. chunk 7 修正：种子版本（SEED_VERSION）与旧数据重建 ---------- */
+section('chunk 7 修正 · 种子版本与旧数据重建');
+S.seed();
+t(typeof FMStore.SEED_VERSION === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(FMStore.SEED_VERSION), 'FMStore.SEED_VERSION 为日期格式字符串常量');
+tEq(FMStore.SEED_VERSION, '2026-11-27', 'SEED_VERSION = 2026-11-27');
+tEq(S.get().seedVersion, FMStore.SEED_VERSION, 'seed() 把当前种子版本写入 state.seedVersion');
+/* 版本相同：load() 不重建，用户改动保留 */
+(function () {
+  S.get().accounts.filter(function (a) { return a.code === '1001'; })[0].opening = 999; // 模拟用户改动
+  S.save();
+  S.load();
+  tEq(A.get('1001').opening, 999, 'seedVersion 相同时 load() 不重建（改动保留）');
+  tEq(S.get().seedVersion, FMStore.SEED_VERSION, '版本号不变');
+})();
+/* 旧版本：先备份旧库，再整库按当前种子重建 */
+(function () {
+  var fake = {};
+  global.localStorage = { // 临时假 localStorage，验完删除
+    getItem: function (k) { return Object.prototype.hasOwnProperty.call(fake, k) ? fake[k] : null; },
+    setItem: function (k, v) { fake[k] = String(v); },
+    removeItem: function (k) { delete fake[k]; }
+  };
+  S.seed();
+  var st = S.get();
+  st.seedVersion = '2026-10-01-old';                                 // 模拟老版本数据
+  st.accounts.filter(function (a) { return a.code === '1601'; })[0].opening = 385000000; // 老种子 ¥3,850,000
+  S.save();
+  S.load();
+  tEq(A.get('1601').opening, 1028000000, '旧版本 state 重建后 1601 期初 = ¥10,280,000（1028000000 分）');
+  tEq(S.get().seedVersion, FMStore.SEED_VERSION, '重建后 seedVersion 更新为当前值');
+  var bk = fake['fm_backup_2026-10-01-old'];
+  t(typeof bk === 'string' && bk.indexOf('385000000') >= 0, '旧库已备份到 fm_backup_<旧版本>（含旧期初 385000000）');
+  t(bk.indexOf('"seedVersion":"2026-10-01-old"') >= 0, '备份内容是旧版本原文');
+  delete global.localStorage;
+  S.seed(); // 恢复内存干净种子，供后续断言使用
+  tEq(A.get('1601').opening, 1028000000, '恢复后 fresh 种子 1601 期初 = ¥10,280,000');
 })();
 
 /* ---------- 汇总 ---------- */

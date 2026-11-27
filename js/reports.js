@@ -14,7 +14,7 @@
  *   负债：短期借款 2001、应付票据 2201、应付账款 2202、预收 2203、应付职工薪酬 2211、
  *   应交税费 2221、其他应付款 2241；
  *   权益：实收资本 3001、资本公积 3002、盈余公积 3101、未分配利润 = 3103 本年利润 + 3104-未分配利润 310405
- *   （+未结转损益，结账后为 0）+ 利润分配其余明细兑底；
+ *   （+未结转损益 − 4101 制造费用余额；4101 系生产部门期间费用，与利润表 / chunk 6 口径一致）+ 利润分配其余明细兑底；
  *   利润表：收入 6001、其他业务收入 6002/6051、成本 5001、税金及附加 5101、销售费用 5201、
  *   管理费用 5301、财务费用 5401、制造费用（费用化）4101、其他业务成本 5002/5411、
  *   营业外收入 6301、营业外支出 5421、所得税费用 5801/6801（两码并存，取发生额之和）。
@@ -125,14 +125,18 @@
   function balanceSheet(period) {
     period = period || currentPeriod();
 
-    // 未结转损益净额：损益类末级科目当前余额（总账口径，含结转凭证）按利润方向合计。
-    // 结账前 = 本年累计利润（3103 未含）；结账后损益科目余额已清零，此项为 0，未分配利润 = 3103 期末余额。
+    // 未结转损益净额（利润方向）＝ 损益类末级科目当前余额 − 4101 制造费用余额。
+    // 4101 在本系统是生产部门的期间费用（chunk 4 折旧、chunk 5 工资社保记 4101，系统没有
+    // 成本结转步骤，结账也只结转损益类），与 chunk 6 FMTax.profitOfPeriod 的利润口径一致；
+    // 不扣 4101 的话 pnlNet 会比 incomeStatement().profitBeforeTax 多一个制造费用，
+    // 且 4101 又同时被列在资产行，两边各错一半、恰好抵消才显得平。借方余额为正 → 减去即扣费用。
     var pnlNet = 0;
     A().leaves().forEach(function (a) {
       if (a.category !== '损益') return;
       var bal = A().balance(a.code, period);
       pnlNet += a.direction === '贷' ? bal : -bal;
     });
+    pnlNet -= A().balance('4101', period); // 制造费用（生产部门期间费用）按余额扣减，与利润表同口径
 
     function sumLines(lines) {
       return lines.reduce(function (s, l) { return s + l.amount; }, 0);
@@ -146,9 +150,10 @@
       { label: '预付款项', amount: leafNet(['1123'], period, '借') },
       { label: '其他应收款', amount: leafNet(['1221'], period, '借') },
       { label: '存货', amount: leafNet(['1401', '1402', '1403', '1405', '1408'], period, '借') - leafNet(['1471'], period, '贷') },
-      // 成本类科目（4001 生产成本 / 4101 制造费用 / 4301 研发支出 / 4401 工程施工）：
-      // 结账只结转损益类，成本类余额留在账上，作为在产/制造费用列示，否则资产总计不等于负债 + 权益
-      { label: '在产品及成本类科目', amount: leafNet(['4001', '4101', '4301', '4401'], period, '借') }
+      // 成本类科目兑底（4001 生产成本 / 4301 研发支出 / 4401 工程施工）。
+      // 4101 制造费用不在此列：它是生产部门期间费用（chunk 4/5 口径），计入下方 pnlNet（权益侧），
+      // 与利润表 / chunk 6 企业所得税口径一致。
+      { label: '在产品及成本类科目', amount: leafNet(['4001', '4301', '4401'], period, '借') }
     ];
     var noncurrent = [
       { label: '固定资产净值', amount: leafNet(['1601'], period, '借') - leafNet(['1602'], period, '贷') - leafNet(['1603'], period, '贷') },
@@ -195,7 +200,7 @@
       { label: '资本公积', amount: leafNet(['3002'], period, '贷') },
       { label: '盈余公积', amount: leafNet(['3101'], period, '贷') },
       { label: '未分配利润', amount: A().balance('3103', period) + A().balance('310405', period) + pnlNet,
-        note: pnlNet ? '（含未结转损益 ' + S().fmt(pnlNet) + '）' : '' }
+        note: pnlNet ? '（含未结转损益及制造费用调整 ' + S().fmt(pnlNet) + '）' : '' }
     ];
 
     var otherEquity = 0;

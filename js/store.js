@@ -8,6 +8,10 @@
   'use strict';
 
   var KEY = 'finance-manager-v1';
+  /* 种子数据版本：每次修改种子内容（期初余额 / 科目表 / 演示凭证等）都必须更新此值。
+   * load() 发现已存数据的 seedVersion 与当前不同（含旧版无版本号）→ 旧库先备份到
+   * fm_backup_<旧版本>，再整库按当前种子重建；版本相同则一字不动（用户数据优先）。 */
+  var SEED_VERSION = '2026-11-27';
   var TOP_KEYS = ['company', 'periods', 'closedPeriods', 'accounts', 'vouchers', 'entries', 'departments', 'staff',
     'customers', 'suppliers', 'taxRecords', 'assets', 'payrolls', 'invoices', 'budgets', 'bankStatements', 'auditLog'];
   var state = null;
@@ -275,6 +279,7 @@
       };
     }
     return {
+      seedVersion: SEED_VERSION,
       company: {
         name: '演示科技有限公司', taxpayerType: 'general', taxpayerTypeName: '一般纳税人', industry: '商贸',
         staffCount: 100, location: 'urban', creditCode: '91310115MA1DEMO26X', legalPerson: '周建国',
@@ -348,6 +353,22 @@
     }
     if (!parsed || typeof parsed !== 'object' || !parsed.company || !Array.isArray(parsed.accounts)) return seed();
     state = parsed;
+    /* chunk 7 修正：种子版本校验。种子（期初余额 / 科目 / 演示凭证）随 chunk 升级会变化，
+     * 老版本数据与新口径对不上（如 1601/1602/310405 期初在 chunk 4 调整过），之前 load()
+     * 的“只补缺失键”迁移纠正不了已变的数值。已存 seedVersion ≠ 当前 SEED_VERSION
+     * （旧版本数据没有版本号也算不同）→ 先把旧库原文备份到 localStorage 的
+     * fm_backup_<旧版本>（localStorage 不可用时跳过备份，仅内存兑底），再整库按当前
+     * 种子重建；版本相同则走下方迁移兼容逻辑，不重建。 */
+    if (state.seedVersion !== SEED_VERSION) {
+      var oldVersion = String(state.seedVersion || 'legacy');
+      var lsB = storage();
+      if (lsB) {
+        try { lsB.setItem('fm_backup_' + oldVersion, raw); } catch (e) { /* 配额满或被禁用 */ }
+      }
+      state = buildSeed();
+      save();
+      return state;
+    }
     /* 旧版迁移兼容：键缺失（undefined），或者值是空数组/空对象且新鲜种子里该键默认值非空
      * （旧版 load() 曾把缺键一律填 []，随保存写进了 localStorage），都从种子深拷贝补齐。
      * 种子默认值本身就空的键（taxRecords 等）不补；已有非空数据一字不动。 */
@@ -444,7 +465,7 @@
   }
 
   root.FMStore = {
-    KEY: KEY, load: load, save: save, reset: reset, seed: seed, get: get, set: set, log: log,
+    KEY: KEY, SEED_VERSION: SEED_VERSION, load: load, save: save, reset: reset, seed: seed, get: get, set: set, log: log,
     toCents: toCents, fmt: fmt, esc: esc
   };
 })(typeof window !== 'undefined' ? window : globalThis);

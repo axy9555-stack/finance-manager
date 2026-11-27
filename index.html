@@ -59,20 +59,20 @@ window.FMToast = function (msg, type) {
   }, 2600);
 };
 </script>
-<script src="js/taxrules.js?v=20261127f"></script>
-<script src="js/store.js?v=20261127f"></script>
-<script src="js/accounts.js?v=20261127f"></script>
-<script src="js/voucher.js?v=20261127f"></script>
-<script src="js/dashboard.js?v=20261127f"></script>
-<script src="js/ledger.js?v=20261127f"></script>
-<script src="js/closing.js?v=20261127f"></script>
-<script src="js/opening.js?v=20261127f"></script>
-<script src="js/arap.js?v=20261127f"></script>
-<script src="js/cashier.js?v=20261127f"></script>
-<script src="js/assets.js?v=20261127f"></script>
-<script src="js/payroll.js?v=20261127f"></script>
-<script src="js/tax.js?v=20261127f"></script>
-<script src="js/reports.js?v=20261127f"></script>
+<script src="js/taxrules.js?v=20261127g"></script>
+<script src="js/store.js?v=20261127g"></script>
+<script src="js/accounts.js?v=20261127g"></script>
+<script src="js/voucher.js?v=20261127g"></script>
+<script src="js/dashboard.js?v=20261127g"></script>
+<script src="js/ledger.js?v=20261127g"></script>
+<script src="js/closing.js?v=20261127g"></script>
+<script src="js/opening.js?v=20261127g"></script>
+<script src="js/arap.js?v=20261127g"></script>
+<script src="js/cashier.js?v=20261127g"></script>
+<script src="js/assets.js?v=20261127g"></script>
+<script src="js/payroll.js?v=20261127g"></script>
+<script src="js/tax.js?v=20261127g"></script>
+<script src="js/reports.js?v=20261127g"></script>
 <script>
 (function () {
   'use strict';
@@ -94,8 +94,11 @@ window.FMToast = function (msg, type) {
       (c.location === 'urban' ? (FMTax.surtax.urban * 100).toFixed(0) + '%（市区）' : (FMTax.surtax.county * 100).toFixed(0) + '%（县城镇）') + '</td></tr>' +
       '</table>' +
       '<h3 class="sec-title">数据管理</h3>' +
-      '<p class="muted">数据保存在本机浏览器 localStorage（键 finance-manager-v1）。恢复演示数据会清空本机全部数据并重新写入种子数据，请先确认没有需要保留的录入。</p>' +
-      '<button class="btn btn-danger" id="btn-reset">恢复演示数据</button>' +
+      '<p class="muted">数据版本：' + esc(FMStore.get('seedVersion') || '（旧版本数据，无版本号）') +
+      ' · 当前种子版本：' + esc(FMStore.SEED_VERSION) +
+      '。打开系统时若版本不一致会自动备份旧数据（fm_backup_<旧版本>）并按当前种子重建；也可随时用下方按钮一键还原。</p>' +
+      '<p class="muted">数据保存在本机浏览器 localStorage（键 finance-manager-v1）。恢复演示数据会按当前种子整库重建（旧数据自动备份），请先确认没有需要保留的录入。</p>' +
+      '<button class="btn btn-danger" id="btn-reset">恢复演示数据（按当前种子重建）</button>' +
       '<p class="muted" style="margin-top:12px">多用户权限管理将在 chunk 8 提供；单机版无多用户与远程访问，多用户需上服务器版。</p>';
     document.getElementById('btn-reset').onclick = function () {
       if (!window.confirm('确定恢复演示数据？本机现有数据将被清空。')) return;
