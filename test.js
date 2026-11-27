@@ -17,7 +17,7 @@ global.FMToast = function () {};
 var fs = require('fs');
 var path = require('path');
 ['js/taxrules.js', 'js/store.js', 'js/accounts.js', 'js/voucher.js', 'js/dashboard.js',
- 'js/ledger.js', 'js/closing.js', 'js/opening.js', 'js/arap.js', 'js/cashier.js', 'js/assets.js', 'js/payroll.js'].forEach(function (f) {
+ 'js/ledger.js', 'js/closing.js', 'js/opening.js', 'js/arap.js', 'js/cashier.js', 'js/assets.js', 'js/payroll.js', 'js/tax.js'].forEach(function (f) {
   /* 在全局作用域执行，等价于浏览器的 <script src> */
   var code = fs.readFileSync(path.join(__dirname, f), 'utf8');
   require('vm').runInThisContext(code, { filename: f });
@@ -1409,6 +1409,164 @@ S.seed();
   tEq(ac.totalNet, 21842050, '迁移后实发合计 218,420.50');
   tEq(acc.filter(function (a) { return a.code === '1001'; })[0].name, '库存现金（自定义）', '迁移不重复覆盖已有数据');
 })();
+
+/* ---------- 22. chunk 6：税务管理 ---------- */
+section('chunk 6 · 税务管理');
+S.seed();
+/* 增值税汇总（种子已过账凭证：0001 进项 104,000、0002 销项 156,000；已交税金 0） */
+(function () {
+  var vs = FMTax.vatSummary(LP);
+  tEq(vs.output, 15600000, '销项税额 156,000.00（只有 0002 已过账）');
+  tEq(vs.input, 10400000, '进项税额 104,000.00（只有 0001 已过账）');
+  tEq(vs.paid, 0, '已交税金 0（0006 缴的是 222102 未交增值税）');
+  tEq(vs.payable, 5200000, '应纳增值税 = 销项 − 进项 = 52,000.00');
+  tEq(vs.balance, 5200000, '应缴余额 52,000.00');
+  var v = FMTax.calcVAT(LP);
+  tEq(v.payable + v.carryForward, 5200000, '应纳为正时留抵结转为 0');
+})();
+/* 进项 > 销项：应纳为负、不生成应交（临时凭证，验完移除） */
+(function () {
+  var res = V.create({ date: '2026-11-20', summary: '测试进项大于销项留抵', maker: '王丽', attachCount: 0, entries: [
+    { accountCode: '22210101', summary: '测试进项冲抵', debit: '200000.00', credit: 0, aux: {} },
+    { accountCode: '100201', summary: '测试进项冲抵', debit: 0, credit: '200000.00', aux: {} }] });
+  V.audit(res.id, '李强'); V.post(res.id);
+  var v = FMTax.calcVAT(LP);
+  tEq(v.payable, -14800000, '进项 > 销项时应纳为负（−148,000.00）');
+  tEq(v.carryForward, 14800000, '留抵结转下期 148,000.00');
+  var f = FMTax.fileVAT(LP);
+  tEq(f.ok && f.record.amount, 0, '留抵时不生成应交（申报金额 0）');
+  tEq(f.voucherId, null, '留抵时不生成计提凭证');
+  t(/留抵/.test(f.record.note), '留抵备注写入申报记录');
+  /* 清理：移除临时凭证与申报记录，回到干净种子 */
+  var st = S.get();
+  st.vouchers = st.vouchers.filter(function (x) { return x.id !== res.id; });
+  st.entries = st.entries.filter(function (x) { return x.voucherId !== res.id; });
+  S.set('taxRecords', []);
+})();
+/* 附加税：市区 7%/3%/2%，小微六税两费减半 */
+(function () {
+  var s = FMTax.calcSurtax(5200000);
+  tEq(s.halved, true, '小微条件成立（从业 100 ≤ 300、资产 ≤ 5000 万）');
+  tEq(s.urban, 182000, '城建税 = 52,000×7%×50% = 1,820.00');
+  tEq(s.edu, 78000, '教育费附加 = 52,000×3%×50% = 780.00');
+  tEq(s.local, 52000, '地方教育附加 = 52,000×2%×50% = 520.00');
+  tEq(s.total, 312000, '附加税合计 3,120.00');
+  var big = FMTax.calcSurtax(5200000, { totalAssetsCents: 6000000000 }); // 资产 6000 万 → 不减半
+  tEq(big.halved, false, '资产超 5000 万不减半');
+  tEq(big.urban + big.edu + big.local, 624000, '不减半附加合计 6,240.00');
+  tEq(big.urban, 364000, '不减半城建税 = 52,000×7% = 3,640.00');
+  var z = FMTax.calcSurtax(0);
+  tEq(z.total, 0, '应纳增值税 ≤ 0 时附加税为 0');
+})();
+/* 企业所得税：小微 5%，超 300 万全额 25% 不分段 */
+(function () {
+  var c = FMTax.calcCIT(LP);
+  tEq(c.profit, 120000000, '本期利润总额 1,200,000.00（损益类已过账发生额）');
+  tEq(c.isSmall, true, '小微条件成立');
+  tEq(c.effectiveRate, 0.05, '实际税率 5%');
+  tEq(c.tax, 6000000, '应交所得税 = 120 万 × 5% = 60,000.00');
+  tEq(FMTax.calcCIT(LP, { profitCents: 100000000 }).tax, 5000000, '利润 100 万 → 税 5 万（小微 5%）');
+  var big = FMTax.calcCIT(LP, { profitCents: 400000000 });
+  tEq(big.isSmall, false, '所得额超 300 万不享受小微');
+  tEq(big.effectiveRate, 0.25, '全额按 25%');
+  tEq(big.tax, 100000000, '利润 400 万 → 税 100 万（不分段）');
+  tEq(FMTax.calcCIT(LP, { profitCents: -5000000 }).tax, 0, '利润 ≤ 0 税额为 0');
+})();
+/* 印花税 */
+(function () {
+  tEq(FMTax.calcStamp(LP).total, 0, '种子凭证无“合同”摘要 → 印花税 0');
+  var r1 = V.create({ date: '2026-11-22', summary: '采购合同 华东电子一批', maker: '王丽', attachCount: 0, entries: [
+    { accountCode: '1405', summary: '采购合同入库', debit: '100000.00', credit: 0, aux: {} },
+    { accountCode: '100201', summary: '付采购合同款', debit: 0, credit: '100000.00', aux: {} }] });
+  V.audit(r1.id, '李强'); V.post(r1.id);
+  var r2 = V.create({ date: '2026-11-23', summary: '借款合同 短期流动资金借款', maker: '王丽', attachCount: 0, entries: [
+    { accountCode: '100201', summary: '收到借款', debit: '500000.00', credit: 0, aux: {} },
+    { accountCode: '2231', summary: '借款本金', debit: 0, credit: '500000.00', aux: {} }] });
+  V.audit(r2.id, '李强'); V.post(r2.id);
+  var st = FMTax.calcStamp(LP);
+  tEq(st.saleBase, 10000000, '买卖合同金额 100,000.00（借贷合计÷2）');
+  tEq(st.saleTax, 3000, '买卖合同印花税 = 100,000×0.03% = 30.00');
+  tEq(st.loanBase, 50000000, '借款合同金额 500,000.00');
+  tEq(st.loanTax, 2500, '借款合同印花税 = 500,000×0.005% = 25.00');
+  tEq(st.total, 5500, '本期印花税合计 55.00');
+  t(st.fundBookBase > 0 && st.fundBookTax === Math.round(st.fundBookBase * 0.00025),
+    '资金账簿税额 = （实收资本+资本公积）×0.025%，仅期初计一次不入本期');
+})();
+/* 申报增值税及附加 */
+(function () {
+  t(!FMTax.fileVAT('2026-12').ok, '非当前期间不能申报');
+  var cp = S.get('closedPeriods') || [];
+  cp.push(LP); S.set('closedPeriods', cp);
+  t(!FMTax.fileVAT(LP).ok && /已结账/.test(FMTax.fileVAT(LP).reason), '已结账期间不能申报');
+  S.set('closedPeriods', (S.get('closedPeriods') || []).filter(function (p) { return p !== LP; }));
+  var f = FMTax.fileVAT(LP);
+  tEq(f.ok, true, '申报 2026-11 增值税成功');
+  tEq(f.record.id, 'TAX-2026-11-VAT', '申报记录号');
+  tEq(f.record.amount, 5200000, '申报税额 = 应纳增值税 52,000.00');
+  tEq(f.record.status, '已申报', '状态已申报');
+  var v = S.get('vouchers').filter(function (x) { return x.id === f.voucherId; })[0];
+  tEq(v.status, '已过账', '申报凭证已过账');
+  tEq(v.maker, '系统税务', '制单人系统税务');
+  var es = V.entriesOf(f.voucherId);
+  tEq(es.reduce(function (s, e) { return s + e.debit; }, 0), es.reduce(function (s, e) { return s + e.credit; }, 0), '申报凭证借贷平衡');
+  function dr(c) { return es.filter(function (e) { return e.accountCode === c; }).reduce(function (s, e) { return s + e.debit; }, 0); }
+  function cr(c) { return es.filter(function (e) { return e.accountCode === c; }).reduce(function (s, e) { return s + e.credit; }, 0); }
+  tEq(dr('22210104'), 5200000, '借 22210104 转出未交增值税 52,000.00');
+  tEq(cr('222102'), 5200000, '贷 222102 未交增值税 52,000.00');
+  tEq(dr('5101'), 312000, '借 5101 税金及附加 3,120.00（附加）');
+  tEq(cr('222105'), 182000, '贷 222105 城建税 1,820.00');
+  tEq(cr('222106'), 78000, '贷 222106 教育费附加 780.00');
+  tEq(cr('222107'), 52000, '贷 222107 地方教育附加 520.00');
+  tEq(A.balance('222102', LP), 5200000, '222102 余额增加至 52,000.00（期初已被 0006 缴清）');
+  tEq(A.balance('222105', LP), 182000, '222105 余额 1,820.00');
+  tEq(A.balance('5101', LP), 312000, '5101 税金及附加余额 3,120.00');
+  t(!FMTax.fileVAT(LP).ok && /已申报/.test(FMTax.fileVAT(LP).reason), '重复申报增值税拒绝');
+})();
+/* 申报企业所得税（利润已被附加税 3,120 减少） */
+(function () {
+  var c = FMTax.calcCIT(LP);
+  tEq(c.profit, 119688000, '计提附加后利润总额 1,196,880.00');
+  tEq(c.tax, 5984400, '应交所得税 = 1,196,880×5% = 59,844.00');
+  var f = FMTax.fileCIT(LP);
+  tEq(f.ok && f.record.amount, 5984400, '企业所得税申报成功，税额 59,844.00');
+  var es = V.entriesOf(f.voucherId);
+  tEq(es.reduce(function (s, e) { return s + e.debit; }, 0), es.reduce(function (s, e) { return s + e.credit; }, 0), '企税凭证借贷平衡');
+  tEq(es.reduce(function (s, e) { return s + e.debit; }, 0), 5984400, '借 6801 所得税费用 59,844.00');
+  tEq(A.balance('222103', LP), 14200000 + 5984400, '222103 余额 = 期初 142,000.00 + 本期计提 59,844.00');
+  t(!FMTax.fileCIT(LP).ok && /已申报/.test(FMTax.fileCIT(LP).reason), '重复申报企税拒绝');
+})();
+/* 缴款 */
+(function () {
+  var p1 = FMTax.payTax('TAX-2026-11-VAT');
+  tEq(p1.ok && p1.total, 5512000, '增值税缴款合计 = 52,000 + 3,120 = 55,120.00');
+  var es = V.entriesOf(p1.id);
+  tEq(es.reduce(function (s, e) { return s + e.debit; }, 0), es.reduce(function (s, e) { return s + e.credit; }, 0), '缴款凭证借贷平衡');
+  function dr(c) { return es.filter(function (e) { return e.accountCode === c; }).reduce(function (s, e) { return s + e.debit; }, 0); }
+  tEq(dr('222102'), 5200000, '借 222102 缴纳增值税');
+  tEq(dr('222105'), 182000, '借 222105 缴纳城建税');
+  tEq(dr('100201'), 0, '贷方无 100201 借方发生');
+  tEq(es.reduce(function (s, e) { return s + e.credit; }, 0), 5512000, '贷 100201 55,120.00');
+  tEq(A.balance('222105', LP), 0, '缴款后 222105 清零');
+  tEq(A.balance('222102', LP), 0, '缴款后 222102 清零');
+  var recs = S.get('taxRecords');
+  tEq(recs.filter(function (r) { return r.id === 'TAX-2026-11-VAT'; })[0].status, '已缴纳', '记录状态已缴纳');
+  t(!FMTax.payTax('TAX-2026-11-VAT').ok && /已缴纳/.test(FMTax.payTax('TAX-2026-11-VAT').reason), '重复缴款拒绝');
+  var p2 = FMTax.payTax('TAX-2026-11-CIT');
+  tEq(p2.ok && p2.total, 5984400, '企税缴款 59,844.00');
+  tEq(A.balance('222103', LP), 14200000, '缴款后 222103 回到期初 142,000.00');
+  t(!FMTax.payTax('TAX-9999-99-XXX').ok, '不存在的记录缴款拒绝');
+})();
+/* 渲染冒烟 */
+smoke(function () {
+  var el = { innerHTML: '', onclick: null };
+  FMTax.renderTax(el);
+  ['增值税', '附加税', '企业所得税', '印花税', '申报记录'].forEach(function (k) { if (el.innerHTML.indexOf(k) < 0) throw new Error('缺 ' + k); });
+}, 'renderTax');
+smoke(function () {
+  var el = { innerHTML: '', onclick: null };
+  FMTax.renderTax(el);
+  if (el.innerHTML.indexOf('已缴纳') < 0 || el.innerHTML.indexOf('小微') < 0) throw new Error('申报状态/小微标识未显示');
+}, 'renderTax（申报后）');
 
 /* ---------- 汇总 ---------- */
 console.log('');
