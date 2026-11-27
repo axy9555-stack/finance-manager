@@ -1369,6 +1369,47 @@ smoke(function () {
   if (el.innerHTML.indexOf('已发放') < 0) throw new Error('发放状态未显示');
 }, 'renderPayroll（已发放）');
 
+/* ---------- 21. chunk 5 旧数据迁移：旧 localStorage 补科目/员工字段 ---------- */
+section('chunk 5 · 旧数据迁移');
+S.seed();
+(function () {
+  var st = S.get();
+  var accCountBefore = st.accounts.length;                       // 122 个（含 520107/520108/530110/530111）
+  st.accounts = st.accounts.filter(function (a) { return a.code !== '530110' && a.code !== '530111'; });
+  st.staff.forEach(function (s) { s.salary = 0; delete s.deductions; });   // 模拟 chunk 1 时期的旧员工档案
+  st.accounts.filter(function (a) { return a.code === '1001'; })[0].name = '库存现金（自定义）'; // 已有科目改名
+  st.staff.filter(function (s) { return s.id === 'E005'; })[0].salary = 555555; // 已有非零 salary 不被覆盖
+  st.staff.filter(function (s) { return s.id === 'E003'; })[0].deductions = { rent: 999 };      // 已有 deductions 不被覆盖
+  S.save();                                                      // Node 桩：写入 memory，模拟浏览器旧 localStorage
+  S.load();
+  var acc = S.get('accounts');
+  tEq(acc.length, accCountBefore, '迁移后科目一条不少（补回 530110/530111）');
+  var n110 = acc.filter(function (a) { return a.code === '530110'; })[0];
+  var n111 = acc.filter(function (a) { return a.code === '530111'; })[0];
+  tEq(n110 && n110.name + '/' + n110.direction + '/' + n110.category, '社会保险费/借/损益', '530110 按种子格式补齐');
+  tEq(n111 && n111.parent + '/' + n111.aux.join(','), '5301/部门', '530111 parent/辅助核算与种子一致');
+  tEq(acc.filter(function (a) { return a.code === '1001'; })[0].name, '库存现金（自定义）', '已有科目改名不被种子覆盖');
+  var e1 = S.get('staff').filter(function (s) { return s.id === 'E001'; })[0];
+  var e2 = S.get('staff').filter(function (s) { return s.id === 'E002'; })[0];
+  var e5 = S.get('staff').filter(function (s) { return s.id === 'E005'; })[0];
+  var e3 = S.get('staff').filter(function (s) { return s.id === 'E003'; })[0];
+  tEq(e1.salary + '/' + e1.deductions.children + '/' + e1.deductions.parents, '3500000/1/3000', 'E001 salary/deductions 恢复种子值');
+  tEq(e3.salary, 1800000, '旧档案 salary 为 0 的 E003 补种子值 18,000.00');
+  tEq(e5.salary, 555555, '已有非零 salary 不被种子覆盖');
+  tEq(e3.deductions.rent, 999, '已有 deductions 不被种子覆盖');
+  /* 恢复标准旧数据状态后再跑真实流程 */
+  e5.salary = 0;                                                 // 555,555 是自定义验证值，还原为 0（按职务默认）
+  e3.deductions = { rent: 1500 };                                // 还原种子扣除
+  S.save();
+  S.load();
+  var ac = FMPayroll.accrue(LP);
+  tEq(ac.ok && ac.count, 20, '旧数据迁移后计提成功（20 张工资单）');
+  tEq(ac.totalGross, 28600000, '迁移后应发合计仍为 286,000.00');
+  tEq(ac.totalTax, 322950, '迁移后个税合计 3,229.50');
+  tEq(ac.totalNet, 21842050, '迁移后实发合计 218,420.50');
+  tEq(acc.filter(function (a) { return a.code === '1001'; })[0].name, '库存现金（自定义）', '迁移不重复覆盖已有数据');
+})();
+
 /* ---------- 汇总 ---------- */
 console.log('');
 console.log('通过 ' + passed + ' 项，失败 ' + failed + ' 项（共 ' + (passed + failed) + ' 项断言）');

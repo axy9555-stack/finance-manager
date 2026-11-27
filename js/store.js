@@ -373,6 +373,42 @@
       });
       save();
     }
+    /* chunk 5 迁移：旧版 localStorage 没有 chunk 4/5 后补的末级科目（520107/520108/530110/530111 等）
+     * 和 staff.salary/deductions 字段（旧 staff 记录是 chunk 1 时期存的）。只补缺，已有数据一字不动；
+     * 补完 save() 一次。js/accounts.js 在 store.js 之前加载（index.html 与 Node 桩同序），
+     * 拿不到 FMAccounts 时跳过科目合并但决不抛错。 */
+    var migrated = false;
+    var tpl2 = tpl || buildSeed();
+    var chart = null;
+    try {
+      chart = (root.FMAccounts && root.FMAccounts.defaultChart) ? seedAccounts() : null;
+    } catch (e) { chart = null; }
+    if (chart && chart.length && Array.isArray(state.accounts)) {
+      var haveAcc = {};
+      state.accounts.forEach(function (a) { if (a && a.code) haveAcc[a.code] = true; });
+      chart.forEach(function (seed) {
+        if (!haveAcc[seed.code]) {
+          state.accounts.push(JSON.parse(JSON.stringify(seed))); // 字段与 seedAccounts() 生成的一致
+          migrated = true;
+        }
+      });
+    }
+    (Array.isArray(state.staff) ? state.staff : []).forEach(function (s) {
+      if (!s || !s.id) return;
+      var seed = null;
+      tpl2.staff.forEach(function (t) { if (t.id === s.id) seed = t; });
+      if (!seed) return;
+      if (!s.salary) { s.salary = seed.salary; migrated = true; }        // 缺失或 0 → 补种子值
+      if (!s.deductions) { s.deductions = JSON.parse(JSON.stringify(seed.deductions || {})); migrated = true; }
+    });
+    if (Array.isArray(state.departments)) { // 防御性：部门档案缺的追加
+      var haveDept = {};
+      state.departments.forEach(function (d) { if (d && d.id) haveDept[d.id] = true; });
+      tpl2.departments.forEach(function (d) {
+        if (!haveDept[d.id]) { state.departments.push(JSON.parse(JSON.stringify(d))); migrated = true; }
+      });
+    }
+    if (migrated) save();
     return state;
   }
 
